@@ -5,7 +5,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 export default function HomeScreen() {
   return (
-    <SafeAreaView className="flex-1 bg-transparent">
+    <SafeAreaView className="flex-1 bg-primary">
       <ScrollView 
         className="flex-1 bg-transparent px-6" 
         showsVerticalScrollIndicator={false}

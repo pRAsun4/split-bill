@@ -1,114 +1,133 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { ArrowLeft, Calendar } from 'lucide-react-native';
-import React from 'react';
-import { Image, ScrollView, Text, TouchableOpacity, View } from 'react-native';
+import { ArrowLeft, Info, Send, X } from 'lucide-react-native';
+import React, { useRef, useState } from 'react';
+import { Image, KeyboardAvoidingView, Platform, ScrollView, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-export default function GroupDetailsScreen() {
-  const router = useRouter();
-  const { id } = useLocalSearchParams(); // This captures the ID from the URL
+export default function GroupChatScreen() {
+    const router = useRouter();
+    const { id } = useLocalSearchParams();
+    const scrollViewRef = useRef<ScrollView>(null);
 
-  return (
-    <SafeAreaView className="flex-1 bg-transparent">
-      {/* 1. Header Navigation - Hardcoded Background */}
-      <View className="flex-row justify-between items-center px-6 py-4 bg-[#FF7A51]">
-        <TouchableOpacity onPress={() => router.back()}>
-          <ArrowLeft color="white" size={24} />
-        </TouchableOpacity>
-        {/* Dynamic Title based on ID if needed */}
-        <Text className="text-white text-xl font-bold">{id || 'Birthday House'}</Text>
-        <View className="bg-white/20 p-2 rounded-xl">
-          <Text className="text-lg">🎂</Text>
-        </View>
-      </View>
+    // 1. Create a ref for the TextInput
+    const inputRef = useRef<TextInput>(null);
 
-      <ScrollView 
-        className="flex-1 bg-transparent" 
-        showsVerticalScrollIndicator={false}
-        contentContainerStyle={{ paddingBottom: 40 }}
-      >
-        <View className="mx-6 mt-6 p-6 bg-white rounded-[32px] shadow-sm">
-           <Text className="text-gray-500 font-medium text-sm">You are owed</Text>
-           <View className="flex-row justify-between items-center mt-1">
-             <Text className="text-[#4ADE80] text-3xl font-bold">$1,508.32</Text>
-             <TouchableOpacity className="bg-black px-6 py-2 rounded-full">
-               <Text className="text-white font-bold">Settle</Text>
-             </TouchableOpacity>
-           </View>
-        </View>
-        
-        {/* 2. Debt Summary Card - Hardcoded Background */}
-        <View className="mx-6 mt-6 p-6 bg-white rounded-[32px] shadow-sm">
-          <Text className="text-gray-500 font-medium text-sm">You are owed</Text>
-          <View className="flex-row justify-between items-center mt-1">
-            <Text className="text-[#4ADE80] text-3xl font-bold">$1,508.32</Text>
-            <TouchableOpacity className="bg-black px-6 py-2 rounded-full">
-              <Text className="text-white font-bold">Settle</Text>
-            </TouchableOpacity>
-          </View>
+    const [inputStep, setInputStep] = useState<'amount' | 'text'>('amount');
+    const [tempAmount, setTempAmount] = useState('');
+    const [tempText, setTempText] = useState('');
 
-          <View className="mt-6 border-t border-gray-100 pt-4">
-            <Text className="text-gray-400 text-xs font-bold uppercase mb-4">Who owes whom?</Text>
-            
-            <View className="flex-row justify-between items-center mb-4">
-              <View className="flex-row items-center">
-                <Image source={{ uri: 'https://avatar.iran.liara.run/public/3' }} className="w-10 h-10 rounded-full" />
-                <Text className="text-gray-800 font-bold ml-3">John owes you</Text>
-              </View>
-              <Text className="text-gray-900 font-bold">$1052.75</Text>
-            </View>
+    const handleSend = () => {
+        if (inputStep === 'amount' && tempAmount) {
+            // 2. Switch step and force keyboard refresh
+            setInputStep('text');
 
-            <View className="flex-row justify-between items-center">
-              <View className="flex-row items-center">
-                <Image source={{ uri: 'https://avatar.iran.liara.run/public/4' }} className="w-10 h-10 rounded-full" />
-                <Text className="text-gray-800 font-bold ml-3">Wade owes you</Text>
-              </View>
-              <Text className="text-gray-900 font-bold">$1052.75</Text>
-            </View>
-          </View>
-        </View>
+            // We blur and refocus after a tiny delay to force the OS to change keyboard type
+            inputRef.current?.blur();
+            setTimeout(() => {
+                inputRef.current?.focus();
+            }, 100);
 
-        {/* 3. Timeline Section */}
-        <View className="px-6 mt-10">
-          <View className="flex-row justify-between items-center mb-6">
-            <Text className="text-white text-xl font-bold">Mar 2024</Text>
-            <TouchableOpacity className="bg-black/20 p-2 rounded-lg">
-              <Calendar color="white" size={20} />
-            </TouchableOpacity>
-          </View>
+        } else if (inputStep === 'text' && tempText) {
+            console.log(`Final: $${tempAmount} for ${tempText}`);
+            resetInput();
+            scrollViewRef.current?.scrollToEnd({ animated: true });
+        }
+    };
 
-          {/* Expense Item 1 - Hardcoded Background */}
-          <View className="bg-[#FFE4E6] p-4 rounded-3xl flex-row justify-between items-center mb-4">
-            <View className="flex-row items-center">
-              <View className="bg-white/40 p-2 rounded-xl"><Text>🎁</Text></View>
-              <View className="ml-3">
-                <Text className="text-gray-900 font-bold text-base">Ansh's Gift</Text>
-                <Text className="text-gray-500 text-xs">Mar 26, 2024</Text>
-              </View>
-            </View>
-            <View className="items-end">
-              <Text className="text-red-500 font-bold text-xs uppercase">You Owe</Text>
-              <Text className="text-red-500 font-bold text-lg">$200.00</Text>
-            </View>
-          </View>
+    const resetInput = () => {
+        setTempAmount('');
+        setTempText('');
+        setInputStep('amount');
+        // Ensure we go back to numeric keyboard on reset
+        inputRef.current?.blur();
+        setTimeout(() => inputRef.current?.focus(), 100);
+    };
 
-          {/* Expense Item 2 - Hardcoded Background */}
-          <View className="bg-[#F0FDF4] p-4 rounded-3xl flex-row justify-between items-center mb-4">
-            <View className="flex-row items-center">
-              <View className="bg-white/40 p-2 rounded-xl"><Text>🍽️</Text></View>
-              <View className="ml-3">
-                <Text className="text-gray-900 font-bold text-base">Dining</Text>
-                <Text className="text-gray-500 text-xs">Mar 20, 2024</Text>
-              </View>
-            </View>
-            <View className="items-end">
-              <Text className="text-green-600 font-bold text-xs uppercase">Owes you</Text>
-              <Text className="text-green-600 font-bold text-lg">$120.00</Text>
-            </View>
-          </View>
+    return (
+        <SafeAreaView className="flex-1 bg-transparent">
+            <KeyboardAvoidingView
+                behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+                className="flex-1"
+            >
+                {/* 1. Header - Hardcoded: bg-[#FF7A51] */}
+                <View className="flex-row justify-between items-center px-6 py-4 bg-[#FF7A51]">
+                    <View className="flex-row items-center">
+                        <TouchableOpacity onPress={() => router.back()} className="mr-3">
+                            <ArrowLeft color="white" size={24} />
+                        </TouchableOpacity>
+                        <View>
+                            <Text className="text-white text-lg font-bold">{id || 'Group Chat'}</Text>
+                            <Text className="text-white/70 text-xs font-medium">3 members active</Text>
+                        </View>
+                    </View>
+                    <TouchableOpacity onPress={() => router.push('/group/details')} className="bg-white/20 p-2 rounded-xl">
+                        <Info color="white" size={20} />
+                    </TouchableOpacity>
+                </View>
 
-        </View>
-      </ScrollView>
-    </SafeAreaView>
-  );
+                {/* 2. Chat Area */}
+                <ScrollView
+                    ref={scrollViewRef}
+                    className="flex-1 bg-transparent px-4"
+                    showsVerticalScrollIndicator={false}
+                >
+                    {/* Example of the Calculated Message Result */}
+                    <View className="flex-row items-end my-6">
+                        <Image source={{ uri: 'https://avatar.iran.liara.run/public/3' }} className="w-8 h-8 rounded-full mr-2" />
+                        <View className="bg-white p-4 rounded-3xl rounded-bl-none shadow-sm max-w-[85%] border border-gray-100">
+                            <Text className="text-[#FF7A51] font-bold text-[10px] uppercase mb-1">Prasun</Text>
+                            <Text className="text-gray-900 text-lg font-bold">$20 for Petrol ⛽</Text>
+
+                            <View className="mt-4 pt-3 border-t border-gray-100">
+                                <Text className="text-gray-400 text-[10px] font-bold uppercase mb-2">Are you in?</Text>
+                                <View className="flex-row gap-2">
+                                    <TouchableOpacity className="bg-green-500 py-3 rounded-2xl flex-1 items-center shadow-sm">
+                                        <Text className="text-white font-bold">YES</Text>
+                                    </TouchableOpacity>
+                                    <TouchableOpacity className="bg-gray-100 py-3 rounded-2xl flex-1 items-center">
+                                        <Text className="text-gray-500 font-bold">NO</Text>
+                                    </TouchableOpacity>
+                                </View>
+                            </View>
+                        </View>
+                    </View>
+                </ScrollView>
+
+                {/* 3. INTELLIGENT INPUT AREA - Hardcoded Backgrounds */}
+                <View className="p-4 bg-transparent">
+                    {/* Amount Chip Indicator - Hardcoded: bg-orange-100 */}
+                    {inputStep === 'text' && (
+                        <View className="flex-row justify-center mb-2">
+                            <View className="bg-orange-100 px-4 py-1 rounded-full flex-row items-center border border-orange-200">
+                                <Text className="text-[#FF7A51] font-bold text-xs">${tempAmount}</Text>
+                                <TouchableOpacity onPress={resetInput} className="ml-2">
+                                    <X color="#FF7A51" size={12} />
+                                </TouchableOpacity>
+                            </View>
+                        </View>
+                    )}
+
+                    <View className="flex-row items-center bg-white rounded-[32px] px-4 py-2 shadow-2xl border border-gray-100">
+                        <TextInput
+                            placeholder={inputStep === 'amount' ? "Enter Amount (e.g. 20)" : "What for? (e.g. Petrol)"}
+                            keyboardType={inputStep === 'amount' ? "numeric" : "default"}
+                            value={inputStep === 'amount' ? tempAmount : tempText}
+                            onChangeText={inputStep === 'amount' ? setTempAmount : setTempText}
+                            autoFocus={true}
+                            className="flex-1 h-14 text-gray-800 text-lg px-2 font-medium"
+                            placeholderTextColor="#9CA3AF"
+                        />
+
+                        <TouchableOpacity
+                            onPress={handleSend}
+                            disabled={inputStep === 'amount' ? !tempAmount : !tempText}
+                            className={`p-4 rounded-full ${(!tempAmount && inputStep === 'amount') ? 'bg-gray-200' : 'bg-black'}`}
+                        >
+                            <Send color="white" size={20} />
+                        </TouchableOpacity>
+                    </View>
+                </View>
+            </KeyboardAvoidingView>
+        </SafeAreaView>
+    );
 }

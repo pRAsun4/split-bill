@@ -1,81 +1,87 @@
 import { useRouter } from 'expo-router';
-import { Tag, Users, X } from 'lucide-react-native';
-import React from 'react';
-import { ScrollView, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { Check, ChevronDown, Type, Users, X } from 'lucide-react-native';
+import React, { useState } from 'react';
+import { Image, ScrollView, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-export default function CreateScreen() {
+export default function CreateGroupScreen() {
   const router = useRouter();
+  const [showFriends, setShowFriends] = useState(false);
+  const [selectedFriends, setSelectedFriends] = useState<number[]>([]);
 
-  // Handle the back action safely
-  const handleClose = () => {
-    if (router.canGoBack()) {
-      router.back();
-    } else {
-      router.replace('/(tabs)');
-    }
+  // Demo Friends Data
+  const demoFriends = [
+    { id: 1, name: 'John Doe', avatar: 'https://avatar.iran.liara.run/public/3' },
+    { id: 2, name: 'Wade Howard', avatar: 'https://avatar.iran.liara.run/public/4' },
+    { id: 3, name: 'Guy Warren', avatar: 'https://avatar.iran.liara.run/public/5' },
+  ];
+
+  const toggleFriend = (id: number) => {
+    setSelectedFriends(prev => 
+      prev.includes(id) ? prev.filter(f => f !== id) : [...prev, id]
+    );
   };
 
   return (
-    <SafeAreaView className="flex-1 bg-transparent">
+    <SafeAreaView className="flex-1 bg-primary">
       {/* 1. Header - Hardcoded: bg-[#FF7A51] */}
-      <View className="flex-row justify-between items-center px-6 py-4 bg-[#FF7A51]">
-        <TouchableOpacity onPress={handleClose}>
-          <X color="white" size={24} />
-        </TouchableOpacity>
-        <Text className="text-white text-xl font-bold">Add New Expense</Text>
-        <View className="w-6" /> 
+      <View className="flex-row justify-between items-center px-6 py-4 ">
+        <TouchableOpacity onPress={() => router.back()}><X color="white" size={24} /></TouchableOpacity>
+        <Text className="text-white text-xl font-bold">New Group</Text>
+        <View className="w-6" />
       </View>
 
-      <ScrollView 
-        className="flex-1 bg-transparent" 
-        showsVerticalScrollIndicator={false}
-        contentContainerStyle={{ paddingHorizontal: 24, paddingTop: 24, paddingBottom: 160 }}
-      >
-        {/* 2. Amount Input Section - Hardcoded: bg-white */}
-        <View className="bg-white p-6 rounded-[32px] shadow-sm items-center mb-6">
-          <Text className="text-gray-400 font-bold uppercase text-xs mb-2">Enter Amount</Text>
+      <ScrollView className="flex-1 bg-transparent px-6 pt-6" showsVerticalScrollIndicator={false}>
+        {/* 2. Group Name - Hardcoded: bg-white */}
+        <View className="bg-white p-5 rounded-[28px] mb-4 shadow-sm">
+          <Text className="text-gray-400 font-bold uppercase text-[10px] mb-2">Group Name</Text>
           <View className="flex-row items-center">
-            <Text className="text-gray-900 text-4xl font-bold">$</Text>
-            <TextInput 
-              placeholder="0.00"
-              keyboardType="decimal-pad"
-              className="text-gray-900 text-5xl font-bold ml-2 w-full text-center"
-              placeholderTextColor="#D1D5DB"
-            />
+            <Type color="#FF7A51" size={20} /><TextInput placeholder="e.g. Goa Trip" className="flex-1 ml-3 text-lg font-bold text-gray-800" />
           </View>
         </View>
 
-        {/* 3. Details Form - Hardcoded: bg-white/90 */}
-        <View className="bg-white/90 p-6 rounded-[32px] shadow-sm">
-          <View className="flex-row items-center mb-6 border-b border-gray-100 pb-4">
-            <View className="bg-orange-100 p-3 rounded-2xl">
-              <Tag color="#FF7A51" size={20} />
+        {/* 3. Friends Selector with Dropdown Functionality */}
+        <View className="bg-white rounded-[28px] mb-6 shadow-sm overflow-hidden">
+          <TouchableOpacity 
+            onPress={() => setShowFriends(!showFriends)}
+            className="p-5 flex-row justify-between items-center border-b border-gray-50"
+          >
+            <View className="flex-row items-center">
+              <Users color="#3B82F6" size={20} />
+              <Text className="ml-3 text-lg font-medium text-gray-800">
+                {selectedFriends.length > 0 ? `${selectedFriends.length} Friends Selected` : "Select Friends"}
+              </Text>
             </View>
-            <TextInput 
-              placeholder="What was this for?"
-              className="flex-1 ml-4 text-gray-800 text-lg font-medium"
-              placeholderTextColor="#9CA3AF"
-            />
-          </View>
-
-          <TouchableOpacity className="flex-row items-center mb-6 border-b border-gray-100 pb-4">
-            <View className="bg-blue-100 p-3 rounded-2xl"><Users color="#3B82F6" size={20} /></View>
-            <View className="flex-1 ml-4">
-              <Text className="text-gray-400 text-xs font-bold uppercase">In Group</Text>
-              <Text className="text-gray-800 text-lg font-medium">Birthday House</Text>
-            </View>
+            <ChevronDown color="#9CA3AF" size={20} style={{ transform: [{ rotate: showFriends ? '180deg' : '0deg' }] }} />
           </TouchableOpacity>
+
+          {/* Demo Friends List Appearance */}
+          {showFriends && (
+            <View className="p-4 bg-gray-50/50">
+              {demoFriends.map((friend) => (
+                <TouchableOpacity 
+                  key={friend.id} 
+                  onPress={() => toggleFriend(friend.id)}
+                  className="flex-row justify-between items-center mb-4 last:mb-0"
+                >
+                  <View className="flex-row items-center">
+                    <Image source={{ uri: friend.avatar }} className="w-10 h-10 rounded-full" />
+                    <Text className="ml-3 font-bold text-gray-700">{friend.name}</Text>
+                  </View>
+                  {selectedFriends.includes(friend.id) && <View className="bg-green-500 rounded-full p-1"><Check color="white" size={14} /></View>}
+                </TouchableOpacity>
+              ))}
+            </View>
+          )}
         </View>
 
-        {/* 4. Action Button - Hardcoded: bg-black */}
+        {/* 4. Save Button - Hardcoded: bg-black */}
         <TouchableOpacity 
-          className="bg-black mt-8 py-5 rounded-[24px] items-center shadow-lg"
-          onPress={() => console.log("Saving...")}
+          className="bg-black py-5 rounded-[24px] items-center shadow-lg"
+          onPress={() => router.push('/group/Chat-Room')} 
         >
-          <Text className="text-white font-bold text-lg">Save Expense</Text>
+          <Text className="text-white font-bold text-lg">Create & Start Chat</Text>
         </TouchableOpacity>
-
       </ScrollView>
     </SafeAreaView>
   );
