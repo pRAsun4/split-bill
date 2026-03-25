@@ -161,7 +161,7 @@ export default function HomeScreen() {
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }}>
       <LinearGradient colors={GRAD} style={styles.gradientBg}>
-        <SafeAreaView style={{ flex: 1 }} edges={["top"]}>
+        {/* <SafeAreaView style={{ flex: 1 }} edges={["top"]}> */}
           {/* ── Top bar ── */}
           <Animated.View style={[styles.topBar, { transform: [{ translateY: headerHeight }] }]}>
             <View style={styles.topBarLeft}>
@@ -186,7 +186,7 @@ export default function HomeScreen() {
             <View style={{ width: SPACE.md }} />
             <BalanceCard label="Owes you" amount={totalOwed} icon="arrow-down-circle" delay={220} />
           </View>
-        </SafeAreaView>
+        {/* </SafeAreaView> */}
       </LinearGradient>
 
       {/* ── White body ── */}
