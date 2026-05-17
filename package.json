@@ -52,6 +52,7 @@
     "react-native-svg": "^15.15.3",
     "react-native-web": "~0.21.0",
     "react-native-worklets": "0.5.1",
+    "socket.io-client": "^4.8.3",
     "tamagui": "^2.0.0-rc.7",
     "victory-native": "^41.20.2",
     "zustand": "^5.0.11"

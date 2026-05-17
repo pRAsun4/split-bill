@@ -16,11 +16,11 @@ import { COLORS, FONT, GRAD, RADIUS, SHADOW, SPACE } from "../../constants/theme
 import { Currency, usePrefsStore, useThemeColors } from "../../store/usePrefsStore";
 
 const CURRENCIES: { code: Currency; name: string; symbol: string; flag: string }[] = [
-    { code: "USD", name: "US Dollar", symbol: "$", flag: "🇺🇸" },
-    { code: "INR", name: "Indian Rupee", symbol: "₹", flag: "🇮🇳" },
-    { code: "EUR", name: "Euro", symbol: "€", flag: "🇪🇺" },
-    { code: "GBP", name: "British Pound", symbol: "£", flag: "🇬🇧" },
-    { code: "JPY", name: "Japanese Yen", symbol: "¥", flag: "🇯🇵" },
+    { code: "USD" as Currency, name: "US Dollar", symbol: "$", flag: "🇺🇸" },
+    { code: "INR" as Currency, name: "Indian Rupee", symbol: "₹", flag: "🇮🇳" },
+    { code: "EUR" as Currency, name: "Euro", symbol: "€", flag: "🇪🇺" },
+    { code: "GBP" as Currency, name: "British Pound", symbol: "£", flag: "🇬🇧" },
+    { code: "JPY" as Currency, name: "Japanese Yen", symbol: "¥", flag: "🇯🇵" },
 ];
 
 function CurrencyRow({

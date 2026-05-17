@@ -1,0 +1,1926 @@
+/**
+ * lib/api.ts
+ * ──────────
+ * Centralised HTTP client for the Splitty backend.
+ *
+ * Key behaviours:
+ *  - All responses follow { success, data, message } shape
+ *  - On 401, automatically attempts one token refresh via the httpOnly cookie
+ *  - If refresh also fails, calls onUnauthorized() (wired to useAuthStore.logout)
+ *  - Cookie credentials always sent so the refreshToken cookie flows through
+ */
+
+import AsyncStorage from "@react-native-async-storage/async-storage";
+
+// ─── Config ───────────────────────────────────────────────────────────────────
+
+const BASE_URL  = process.env.EXPO_PUBLIC_API_URL  ?? "http://localhost:3001";
+const VERSION   = process.env.EXPO_PUBLIC_API_VERSION ?? "v1";
+const TIMEOUT   = parseInt(process.env.EXPO_PUBLIC_API_TIMEOUT ?? "10000", 10);
+const TOKEN_KEY = process.env.EXPO_PUBLIC_TOKEN_KEY ?? "splitty_auth_token";
+
+export const API_BASE = `${BASE_URL}/api/${VERSION}`;
+
+// ─── Callback wired by useAuthStore on boot ───────────────────────────────────
+// Avoids circular import: store imports api, api doesn't import store.
+
+let onUnauthorized: (() => void) | null = null;
+export function setUnauthorizedHandler(fn: () => void) {
+  onUnauthorized = fn;
+}
+
+// ─── Core Types ───────────────────────────────────────────────────────────────
+
+export type ApiResponse<T> =
+  | { ok: true;  data: T;    message?: string }
+  | { ok: false; error: string; status?: number; fieldErrors?: FieldError[] };
+
+export type FieldError = { field: string; message: string };
+
+// ─── Shared API types (used by stores) ───────────────────────────────────────
+
+export type ApiUserProfile = {
+  id: string;
+  userId: string;
+  bio: string | null;
+  phone?: string | null;
+  currency: string;
+  theme: "system" | "light" | "dark";
+  fontSize: "small" | "medium" | "large";
+  notifyNewExpense: boolean;
+  notifySettlement: boolean;
+  notifyGroupInvite: boolean;
+  notifyExpenseReminder: boolean;
+  reduceMotion: boolean;
+  highContrast: boolean;
+  showEmail: boolean;
+  showPhone: boolean;
+  country?: string | null;
+};
+
+export type ApiUser = {
+  id: string;
+  name: string;
+  email: string;
+  avatarUrl: string | null;
+  createdAt: string;
+  profile?: ApiUserProfile;
+};
+
+export type ApiMember = {
+  userId: string;
+  role: "admin" | "member";
+  user: Pick<ApiUser, "id" | "name" | "avatarUrl">;
+};
+
+export type ApiGroup = {
+  id: string;
+  name: string;
+  details: string | null;
+  iconEmoji: string | null;
+  createdById: string;
+  createdAt: string;
+  members: ApiMember[];
+};
+
+export type ParticipationStatus = "invited" | "yes" | "no" | "manual";
+export type ExpenseStatus       = "pending" | "locked" | "settled";
+
+export type ApiPayer = {
+  userId: string;
+  amountPaid: string | number;
+  user: Pick<ApiUser, "id" | "name" | "avatarUrl">;
+};
+
+export type ApiParticipant = {
+  userId: string;
+  participationStatus: ParticipationStatus;
+  respondedAt: string | null;
+  user: Pick<ApiUser, "id" | "name" | "avatarUrl">;
+};
+
+export type ApiSplit = {
+  id: string;
+  debtorId: string;
+  creditorId: string;
+  splitAmount: string | number;
+  isSettled: boolean;
+  debtor?:   Pick<ApiUser, "id" | "name">;
+  creditor?: Pick<ApiUser, "id" | "name">;
+};
+
+export type ApiExpense = {
+  id: string;
+  groupId: string;
+  createdById: string;
+  title: string;
+  totalAmount: string | number;
+  currency: string;
+  status: ExpenseStatus;
+  createdAt: string;
+  createdBy?: Pick<ApiUser, "id" | "name" | "avatarUrl">;
+  payers: ApiPayer[];
+  participants: ApiParticipant[];
+  splits: ApiSplit[];
+};
+
+export type ApiMessage = {
+  id: string;
+  groupId: string;
+  senderId: string;
+  messageType: "text" | "expense" | "system";
+  content: string | null;
+  amountSnapshot: number | null;
+  description: string | null;
+  expenseId: string | null;
+  createdAt: string;
+  sender: Pick<ApiUser, "id" | "name" | "avatarUrl">;
+  expense?: ApiExpense | null;
+};
+
+export type ApiBalance = {
+  id: string;
+  otherUser: Pick<ApiUser, "id" | "name" | "avatarUrl">;
+  youOwe: number;
+  owesYou: number;
+  netAmount: number;
+  currency: string;
+  lastUpdated: string;
+};
+
+export type ApiSettlementTx = {
+  from: Pick<ApiUser, "id" | "name">;
+  to:   Pick<ApiUser, "id" | "name">;
+  amount: number;
+  currency: string;
+};
+
+export type ApiSettlement = {
+  id: string;
+  groupId: string;
+  payerId: string;
+  payeeId: string;
+  amount: string | number;
+  currency: string;
+  note: string | null;
+  settledAt: string;
+  payer: Pick<ApiUser, "id" | "name" | "avatarUrl">;
+  payee: Pick<ApiUser, "id" | "name" | "avatarUrl">;
+};
+
+export type ApiFriendship = {
+  friendshipId: string;
+  status: "accepted" | "pending";
+  since?: string;
+  user: Pick<ApiUser, "id" | "name" | "avatarUrl" | "email">;
+};
+
+export type ApiFriendRequest = {
+  friendshipId: string;
+  user: Pick<ApiUser, "id" | "name" | "avatarUrl">;
+  sentAt: string;
+};
+
+// ─── Raw fetch (no auto-refresh) ─────────────────────────────────────────────
+
+async function rawRequest<T>(
+  path: string,
+  options: RequestInit & { token?: string } = {},
+): Promise<ApiResponse<T>> {
+  const { token, ...rest } = options;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT);
+
+  try {
+    const res = await fetch(`${API_BASE}${path}`, {
+      ...rest,
+      credentials: "include",           // always send cookies (refreshToken)
+      signal: controller.signal,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(rest.headers ?? {}),
+      },
+    });
+
+    clearTimeout(timer);
+
+    let body: any = null;
+    const ct = res.headers.get("content-type") ?? "";
+    if (ct.includes("application/json")) body = await res.json();
+    else body = await res.text();
+
+    if (!res.ok) {
+      const msg =
+        body?.message ||
+        (typeof body === "string" ? body : null) ||
+        `Request failed (${res.status})`;
+      const fieldErrors: FieldError[] = Array.isArray(body?.errors)
+        ? body.errors
+        : [];
+      return { ok: false, error: msg, status: res.status, fieldErrors };
+    }
+
+    // Unwrap { success, data, message }
+    const data = body?.data !== undefined ? body.data : body;
+    return { ok: true, data: data as T, message: body?.message };
+  } catch (err: any) {
+    clearTimeout(timer);
+    if (err?.name === "AbortError")
+      return { ok: false, error: "Request timed out. Check your connection." };
+    return { ok: false, error: err?.message ?? "Network error. Please try again." };
+  }
+}
+
+// ─── request() — with automatic token refresh on 401 ─────────────────────────
+
+let isRefreshing = false;
+let refreshQueue: Array<(token: string | null) => void> = [];
+
+async function request<T>(
+  path: string,
+  options: RequestInit & { token?: string } = {},
+): Promise<ApiResponse<T>> {
+  // 1. Read token from AsyncStorage if not supplied
+  const token = options.token ?? (await AsyncStorage.getItem(TOKEN_KEY)) ?? undefined;
+
+  const res = await rawRequest<T>(path, { ...options, token });
+
+  // 2. Not a 401 — return as-is
+  if (res.ok || res.status !== 401) return res;
+
+  // 3. 401 — try to refresh the token (one concurrent refresh max)
+  if (isRefreshing) {
+    // Queue this request until the refresh resolves
+    return new Promise((resolve) => {
+      refreshQueue.push(async (newToken) => {
+        if (!newToken) {
+          resolve({ ok: false, error: "Session expired. Please log in again.", status: 401 });
+          return;
+        }
+        resolve(rawRequest<T>(path, { ...options, token: newToken }));
+      });
+    });
+  }
+
+  isRefreshing = true;
+
+  const refreshRes = await rawRequest<{ accessToken: string }>(
+    "/auth/refresh",
+    { method: "POST" },   // no body — uses httpOnly cookie automatically
+  );
+
+  isRefreshing = false;
+
+  if (refreshRes.ok) {
+    const newToken = refreshRes.data.accessToken;
+    await AsyncStorage.setItem(TOKEN_KEY, newToken);
+
+    // Flush queue
+    refreshQueue.forEach((cb) => cb(newToken));
+    refreshQueue = [];
+
+    // Retry original request with new token
+    return rawRequest<T>(path, { ...options, token: newToken });
+  } else {
+    // Refresh failed — session is dead
+    refreshQueue.forEach((cb) => cb(null));
+    refreshQueue = [];
+    onUnauthorized?.();
+    return { ok: false, error: "Session expired. Please log in again.", status: 401 };
+  }
+}
+
+// ─── Auth API ─────────────────────────────────────────────────────────────────
+
+export type LoginPayload    = { email: string; password: string };
+export type RegisterPayload = { name: string; email: string; password: string };
+
+export const authApi = {
+  register: (payload: RegisterPayload) =>
+    rawRequest<{ user: ApiUser }>("/auth/register", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
+  login: (payload: LoginPayload) =>
+    rawRequest<{ user: ApiUser; accessToken: string }>("/auth/login", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
+  logout: (token: string) =>
+    rawRequest<null>("/auth/logout", {
+      method: "POST",
+      token,
+    }),
+
+  refresh: () =>
+    rawRequest<{ accessToken: string }>("/auth/refresh", { method: "POST" }),
+
+  me: (token: string) =>
+    rawRequest<{ user: ApiUser }>("/auth/me", { token }),
+
+  changePassword: (payload: { currentPassword: string; newPassword: string }) =>
+    request<null>("/auth/change-password", {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+};
+
+// ─── Users API ────────────────────────────────────────────────────────────────
+
+export const usersApi = {
+  search: (q: string, limit = 20) =>
+    request<{ users: Pick<ApiUser, "id" | "name" | "email" | "avatarUrl">[]; count: number }>(
+      `/users/search?q=${encodeURIComponent(q)}&limit=${limit}`,
+    ),
+
+  getById: (userId: string) =>
+    request<{ user: ApiUser }>(`/users/${userId}`),
+
+  updateMe: (payload: { name?: string; avatarUrl?: string }) =>
+    request<{ user: ApiUser }>("/users/me", {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+
+  updateMyProfile: (payload: Partial<ApiUserProfile>) =>
+    request<{ profile: ApiUserProfile }>("/users/me/profile", {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+
+  deleteMe: () =>
+    request<null>("/users/me", { method: "DELETE" }),
+};
+
+// ─── Friends API ──────────────────────────────────────────────────────────────
+
+export const friendsApi = {
+  list: () =>
+    request<{ friends: ApiFriendship[]; count: number }>("/users/me/friends"),
+
+  requests: () =>
+    request<{ received: ApiFriendRequest[]; sent: ApiFriendRequest[] }>(
+      "/users/me/friends/requests",
+    ),
+
+  send: (userId: string) =>
+    request<{ friendship: { id: string; status: string }; autoAccepted: boolean }>(
+      "/users/me/friends",
+      { method: "POST", body: JSON.stringify({ userId }) },
+    ),
+
+  accept: (friendshipId: string) =>
+    request<{ friendship: { id: string; status: string } }>(
+      `/users/me/friends/${friendshipId}/accept`,
+      { method: "PATCH" },
+    ),
+
+  remove: (friendshipId: string) =>
+    request<null>(`/users/me/friends/${friendshipId}`, { method: "DELETE" }),
+};
+
+// ─── Groups API ───────────────────────────────────────────────────────────────
+
+export const groupsApi = {
+  list: () =>
+    request<{ groups: ApiGroup[]; count: number }>("/groups"),
+
+  create: (payload: { name: string; details?: string; iconEmoji?: string; memberIds?: string[] }) =>
+    request<{ group: ApiGroup }>("/groups", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
+  get: (groupId: string) =>
+    request<{ group: ApiGroup }>(`/groups/${groupId}`),
+
+  update: (groupId: string, payload: { name?: string; details?: string; iconEmoji?: string }) =>
+    request<{ group: ApiGroup }>(`/groups/${groupId}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+
+  delete: (groupId: string) =>
+    request<null>(`/groups/${groupId}`, { method: "DELETE" }),
+
+  addMembers: (groupId: string, memberIds: string[]) =>
+    request<{ added: number; alreadyMembers: number; addedUsers: ApiUser[] }>(
+      `/groups/${groupId}/members`,
+      { method: "POST", body: JSON.stringify({ memberIds }) },
+    ),
+
+  removeMember: (groupId: string, userId: string) =>
+    request<null>(`/groups/${groupId}/members/${userId}`, { method: "DELETE" }),
+
+  leave: (groupId: string) =>
+    request<null>(`/groups/${groupId}/leave`, { method: "POST" }),
+
+  updateMemberRole: (groupId: string, userId: string, role: "admin" | "member") =>
+    request<{ member: { userId: string; role: string } }>(
+      `/groups/${groupId}/members/${userId}/role`,
+      { method: "PATCH", body: JSON.stringify({ role }) },
+    ),
+};
+
+// ─── Messages API ─────────────────────────────────────────────────────────────
+
+export const messagesApi = {
+  list: (groupId: string, params?: { limit?: number; cursor?: string }) => {
+    const qs = new URLSearchParams();
+    if (params?.limit)  qs.set("limit",  String(params.limit));
+    if (params?.cursor) qs.set("cursor", params.cursor);
+    const query = qs.toString() ? `?${qs}` : "";
+    return request<{
+      data: ApiMessage[];
+      pagination: { hasMore: boolean; nextCursor: string | null; count: number };
+    }>(`/groups/${groupId}/messages${query}`);
+  },
+
+  sendText: (groupId: string, content: string) =>
+    request<{ message: ApiMessage; expense: null }>(
+      `/groups/${groupId}/messages`,
+      { method: "POST", body: JSON.stringify({ messageType: "text", content }) },
+    ),
+
+  sendExpense: (groupId: string, payload: { amount: number; description: string; currency?: string }) =>
+    request<{ message: ApiMessage; expense: ApiExpense }>(
+      `/groups/${groupId}/messages`,
+      {
+        method: "POST",
+        body: JSON.stringify({ messageType: "expense", ...payload }),
+      },
+    ),
+
+  delete: (groupId: string, messageId: string) =>
+    request<null>(`/groups/${groupId}/messages/${messageId}`, { method: "DELETE" }),
+};
+
+// ─── Expenses API ─────────────────────────────────────────────────────────────
+
+export const expensesApi = {
+  listByGroup: (groupId: string) =>
+    request<{ expenses: ApiExpense[] }>(`/groups/${groupId}/expenses`),
+
+  get: (expenseId: string) =>
+    request<{ expense: ApiExpense }>(`/expenses/${expenseId}`),
+
+  update: (expenseId: string, payload: { title?: string; totalAmount?: number; currency?: string }) =>
+    request<{ expense: ApiExpense }>(`/expenses/${expenseId}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+
+  delete: (expenseId: string) =>
+    request<null>(`/expenses/${expenseId}`, { method: "DELETE" }),
+
+  lock: (expenseId: string) =>
+    request<{ expense: ApiExpense }>(`/expenses/${expenseId}/lock`, { method: "POST" }),
+
+  unlock: (expenseId: string) =>
+    request<{ expense: ApiExpense }>(`/expenses/${expenseId}/unlock`, { method: "POST" }),
+
+  participate: (expenseId: string, status: "yes" | "no") =>
+    request<{ participant: ApiParticipant }>(`/expenses/${expenseId}/participate`, {
+      method: "PATCH",
+      body: JSON.stringify({ status }),
+    }),
+
+  updateParticipant: (expenseId: string, userId: string, status: ParticipationStatus) =>
+    request<{ participant: ApiParticipant }>(`/expenses/${expenseId}/participants`, {
+      method: "PATCH",
+      body: JSON.stringify({ userId, status }),
+    }),
+
+  addPayer: (expenseId: string, userId: string, amountPaid: number) =>
+    request<{ payer: ApiPayer }>(`/expenses/${expenseId}/payers`, {
+      method: "POST",
+      body: JSON.stringify({ userId, amountPaid }),
+    }),
+
+  removePayer: (expenseId: string, userId: string) =>
+    request<null>(`/expenses/${expenseId}/payers/${userId}`, { method: "DELETE" }),
+};
+
+// ─── Balances API ─────────────────────────────────────────────────────────────
+
+export const balancesApi = {
+  list: (groupId: string) =>
+    request<{ balances: ApiBalance[] }>(`/groups/${groupId}/balances`),
+
+  summary: (groupId: string) =>
+    request<{ transactions: ApiSettlementTx[]; totalTransactions: number; isSettled: boolean }>(
+      `/groups/${groupId}/balances/summary`,
+    ),
+
+  getWithUser: (groupId: string, userId: string) =>
+    request<{ balance: { netAmount: number; youOwe: number; owesYou: number; currency: string; lastUpdated: string } }>(
+      `/groups/${groupId}/balances/${userId}`,
+    ),
+
+  recalculate: (groupId: string) =>
+    request<{ recalculated: number }>(`/groups/${groupId}/balances/recalculate`, {
+      method: "POST",
+    }),
+};
+
+// ─── Settlements API ──────────────────────────────────────────────────────────
+
+export const settlementsApi = {
+  list: (groupId: string) =>
+    request<{ settlements: ApiSettlement[]; count: number }>(`/groups/${groupId}/settlements`),
+
+  listWithUser: (groupId: string, userId: string) =>
+    request<{ settlements: ApiSettlement[]; count: number }>(
+      `/groups/${groupId}/settlements/with/${userId}`,
+    ),
+
+  create: (
+    groupId: string,
+    payload: { payeeId: string; amount: number; currency?: string; note?: string },
+  ) =>
+    request<{
+      settlement: ApiSettlement;
+      previousBalance: number;
+      newBalance: number;
+      fullySettled: boolean;
+    }>(`/groups/${groupId}/settlements`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
+  undo: (groupId: string, settlementId: string) =>
+    request<{ deleted: boolean; note: string }>(
+      `/groups/${groupId}/settlements/${settlementId}`,
+      { method: "DELETE" },
+    ),
+};import AsyncStorage from "@react-native-async-storage/async-storage";
+import { create } from "zustand";
+import { authApi, AuthUser } from "../lib/api";
+
+const TOKEN_KEY = process.env.EXPO_PUBLIC_TOKEN_KEY ?? "splitty_auth_token";
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+type AuthStatus = "unknown" | "authenticated" | "unauthenticated";
+
+type AuthState = {
+    status: AuthStatus;       // "unknown" while checking AsyncStorage on boot
+    token: string | null;
+    user: AuthUser | null;
+    error: string | null;
+    loading: boolean;
+
+    // Actions
+    bootstrap: () => Promise<void>;          // called once on app start
+    login: (email: string, password: string) => Promise<boolean>;
+    register: (name: string, email: string, password: string) => Promise<boolean>;
+    forgotPassword: (email: string) => Promise<boolean>;
+    logout: () => Promise<void>;
+    clearError: () => void;
+};
+
+// ─── Store ────────────────────────────────────────────────────────────────────
+
+export const useAuthStore = create<AuthState>((set, get) => ({
+    status: "unknown",
+    token: null,
+    user: null,
+    error: null,
+    loading: false,
+
+    // ── bootstrap ──────────────────────────────────────────────────────────────
+    // Called once from the root layout on mount.
+    // Reads persisted token → verifies it → sets status.
+
+    bootstrap: async () => {
+        try {
+            const stored = await AsyncStorage.getItem(TOKEN_KEY);
+            if (!stored) {
+                set({ status: "unauthenticated", token: null, user: null });
+                return;
+            }
+
+            // Verify token is still valid by hitting /auth/me
+            const res = await authApi.me(stored);
+            if (res.ok) {
+                set({ status: "authenticated", token: stored, user: res.data });
+            } else {
+                // Token expired / invalid — clear it
+                await AsyncStorage.removeItem(TOKEN_KEY);
+                set({ status: "unauthenticated", token: null, user: null });
+            }
+        } catch {
+            set({ status: "unauthenticated", token: null, user: null });
+        }
+    },
+
+    // ── login ──────────────────────────────────────────────────────────────────
+
+    login: async (email, password) => {
+        set({ loading: true, error: null });
+        const res = await authApi.login({ email, password });
+
+        if (res.ok) {
+            await AsyncStorage.setItem(TOKEN_KEY, res.data.access_token);
+            set({
+                loading: false,
+                status: "authenticated",
+                token: res.data.access_token,
+                user: res.data.user,
+            });
+            return true;
+        } else {
+            set({ loading: false, error: res.error });
+            return false;
+        }
+    },
+
+    // ── register ───────────────────────────────────────────────────────────────
+
+    register: async (name, email, password) => {
+        set({ loading: true, error: null });
+        const res = await authApi.register({ name, email, password });
+
+        if (res.ok) {
+            await AsyncStorage.setItem(TOKEN_KEY, res.data.access_token);
+            set({
+                loading: false,
+                status: "authenticated",
+                token: res.data.access_token,
+                user: res.data.user,
+            });
+            return true;
+        } else {
+            set({ loading: false, error: res.error });
+            return false;
+        }
+    },
+
+    // ── forgotPassword ─────────────────────────────────────────────────────────
+
+    forgotPassword: async (email) => {
+        set({ loading: true, error: null });
+        const res = await authApi.forgotPassword({ email });
+
+        if (res.ok) {
+            set({ loading: false });
+            return true;
+        } else {
+            set({ loading: false, error: res.error });
+            return false;
+        }
+    },
+
+    // ── logout ─────────────────────────────────────────────────────────────────
+
+    logout: async () => {
+        await AsyncStorage.removeItem(TOKEN_KEY);
+        set({ status: "unauthenticated", token: null, user: null, error: null });
+    },
+
+    clearError: () => set({ error: null }),
+}));import { create } from "zustand";
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+export type Member = {
+    id: string;
+    name: string;
+    initials: string;
+    avatarColor: string;
+};
+
+export type Split = {
+    memberId: string;
+    amount: number;
+    settled: boolean;
+};
+
+export type ExpenseCategory =
+    | "Food"
+    | "Transport"
+    | "Shopping"
+    | "Gift"
+    | "Accommodation"
+    | "Entertainment"
+    | "Utilities"
+    | "Other";
+
+export type Expense = {
+    id: string;
+    groupId: string;
+    title: string;
+    amount: number;
+    paidById: string;
+    date: string;
+    category: ExpenseCategory;
+    emoji: string;
+    splits: Split[];
+};
+
+export type Group = {
+    id: string;
+    name: string;
+    emoji: string;
+    createdAt: string;
+    members: Member[];
+    expenses: Expense[];
+};
+
+export type Message = {
+    id: string;
+    groupId: string;
+    senderId: string;
+    type: "expense" | "text" | "settlement";
+    amount?: number;
+    description?: string;
+    splits?: Split[];
+    timestamp: string;
+    content?: string;
+};
+
+export type DebtEntry = {
+    fromId: string;
+    fromName: string;
+    toId: string;
+    toName: string;
+    amount: number;
+};
+
+export type FriendBalance = {
+    memberId: string;
+    name: string;
+    initials: string;
+    avatarColor: string;
+    net: number;
+};
+
+// ─── Computation Helpers ──────────────────────────────────────────────────────
+
+export function getNetBalance(userId: string, expenses: Expense[]) {
+    let owes = 0, owed = 0;
+    for (const exp of expenses) {
+        if (exp.paidById === userId) {
+            for (const s of exp.splits)
+                if (s.memberId !== userId && !s.settled) owed += s.amount;
+        } else {
+            const mine = exp.splits.find((s) => s.memberId === userId);
+            if (mine && !mine.settled) owes += mine.amount;
+        }
+    }
+    return {
+        owes: parseFloat(owes.toFixed(2)),
+        owed: parseFloat(owed.toFixed(2)),
+        net: parseFloat((owed - owes).toFixed(2)),
+    };
+}
+
+export function computeSettlements(members: Member[], expenses: Expense[]): DebtEntry[] {
+    const bal: Record<string, number> = {};
+    for (const m of members) bal[m.id] = 0;
+    for (const exp of expenses) {
+        for (const s of exp.splits) {
+            if (s.settled || s.memberId === exp.paidById) continue;
+            bal[exp.paidById] = (bal[exp.paidById] ?? 0) + s.amount;
+            bal[s.memberId] = (bal[s.memberId] ?? 0) - s.amount;
+        }
+    }
+    const creditors = members.filter((m) => (bal[m.id] ?? 0) > 0.005)
+        .map((m) => ({ ...m, amount: bal[m.id] })).sort((a, b) => b.amount - a.amount);
+    const debtors = members.filter((m) => (bal[m.id] ?? 0) < -0.005)
+        .map((m) => ({ ...m, amount: -(bal[m.id] ?? 0) })).sort((a, b) => b.amount - a.amount);
+
+    const result: DebtEntry[] = [];
+    let ci = 0, di = 0;
+    while (ci < creditors.length && di < debtors.length) {
+        const c = creditors[ci], d = debtors[di];
+        const amt = Math.min(c.amount, d.amount);
+        if (amt > 0.005) result.push({ fromId: d.id, fromName: d.name, toId: c.id, toName: c.name, amount: parseFloat(amt.toFixed(2)) });
+        c.amount -= amt; d.amount -= amt;
+        if (c.amount < 0.005) ci++;
+        if (d.amount < 0.005) di++;
+    }
+    return result;
+}
+
+export function computeFriendBalances(userId: string, groups: Group[]): FriendBalance[] {
+    const balMap: Record<string, FriendBalance> = {};
+    for (const g of groups) {
+        if (!g.members.some((m) => m.id === userId)) continue;
+        for (const exp of g.expenses) {
+            if (exp.paidById === userId) {
+                for (const s of exp.splits) {
+                    if (s.memberId === userId || s.settled) continue;
+                    const mem = g.members.find((m) => m.id === s.memberId);
+                    if (!mem) continue;
+                    if (!balMap[mem.id]) balMap[mem.id] = { memberId: mem.id, name: mem.name, initials: mem.initials, avatarColor: mem.avatarColor, net: 0 };
+                    balMap[mem.id].net += s.amount;
+                }
+            } else {
+                const mine = exp.splits.find((s) => s.memberId === userId);
+                if (!mine || mine.settled) continue;
+                const payer = g.members.find((m) => m.id === exp.paidById);
+                if (!payer) continue;
+                if (!balMap[payer.id]) balMap[payer.id] = { memberId: payer.id, name: payer.name, initials: payer.initials, avatarColor: payer.avatarColor, net: 0 };
+                balMap[payer.id].net -= mine.amount;
+            }
+        }
+    }
+    return Object.values(balMap).map((b) => ({ ...b, net: parseFloat(b.net.toFixed(2)) }));
+}
+
+// ─── Seed Data ────────────────────────────────────────────────────────────────
+
+const ME: Member = { id: "me", name: "You", initials: "ME", avatarColor: "#FF6B35" };
+const JOHN: Member = { id: "john", name: "John", initials: "JO", avatarColor: "#6C63FF" };
+const WADE: Member = { id: "wade", name: "Wade Howard", initials: "WH", avatarColor: "#FF6584" };
+const GUY: Member = { id: "guy", name: "Guy Warren", initials: "GW", avatarColor: "#43BCCD" };
+const JACK: Member = { id: "jack", name: "Jack", initials: "JK", avatarColor: "#FF9F43" };
+const KIM: Member = { id: "kim", name: "Kim", initials: "KM", avatarColor: "#EE5A24" };
+
+const SEED_GROUPS: Group[] = [
+    {
+        id: "g1", name: "Birthday House", emoji: "🎂", createdAt: "2023-03-24",
+        members: [ME, JOHN, WADE],
+        expenses: [
+            { id: "e1", groupId: "g1", title: "Ansh's Gift", amount: 600, paidById: "me", date: "2024-03-26", category: "Gift", emoji: "🎁", splits: [{ memberId: "me", amount: 200, settled: false }, { memberId: "john", amount: 200, settled: false }, { memberId: "wade", amount: 200, settled: false }] },
+            { id: "e2", groupId: "g1", title: "Trip", amount: 450, paidById: "john", date: "2024-03-22", category: "Transport", emoji: "✈️", splits: [{ memberId: "me", amount: 150, settled: false }, { memberId: "john", amount: 150, settled: false }, { memberId: "wade", amount: 150, settled: false }] },
+            { id: "e3", groupId: "g1", title: "Balloons", amount: 90, paidById: "wade", date: "2024-03-21", category: "Entertainment", emoji: "🎈", splits: [{ memberId: "me", amount: 30, settled: false }, { memberId: "john", amount: 30, settled: false }, { memberId: "wade", amount: 30, settled: false }] },
+            { id: "e4", groupId: "g1", title: "Dinning", amount: 360, paidById: "me", date: "2024-03-20", category: "Food", emoji: "🍽️", splits: [{ memberId: "me", amount: 120, settled: false }, { memberId: "john", amount: 120, settled: false }, { memberId: "wade", amount: 120, settled: false }] },
+            { id: "e5", groupId: "g1", title: "Stationary", amount: 60, paidById: "john", date: "2024-03-18", category: "Shopping", emoji: "📎", splits: [{ memberId: "me", amount: 20, settled: false }, { memberId: "john", amount: 20, settled: false }, { memberId: "wade", amount: 20, settled: false }] },
+        ],
+    },
+    {
+        id: "g2", name: "Party Time", emoji: "🎉", createdAt: "2023-03-24",
+        members: [ME, GUY, WADE],
+        expenses: [
+            { id: "e6", groupId: "g2", title: "Venue Booking", amount: 750, paidById: "me", date: "2023-03-24", category: "Entertainment", emoji: "🎊", splits: [{ memberId: "me", amount: 250, settled: false }, { memberId: "guy", amount: 250, settled: false }, { memberId: "wade", amount: 250, settled: true }] },
+        ],
+    },
+    {
+        id: "g3", name: "Shopping", emoji: "🛍️", createdAt: "2023-03-24",
+        members: [ME, JACK, KIM],
+        expenses: [
+            { id: "e7", groupId: "g3", title: "Groceries", amount: 505, paidById: "jack", date: "2023-03-24", category: "Shopping", emoji: "🛒", splits: [{ memberId: "me", amount: 168.34, settled: false }, { memberId: "jack", amount: 168.33, settled: false }, { memberId: "kim", amount: 168.33, settled: false }] },
+        ],
+    },
+];
+
+const SEED_MESSAGES: Message[] = [
+    { id: "msg1", groupId: "g1", senderId: "me", type: "expense", amount: 600, description: "Ansh's Gift", splits: SEED_GROUPS[0].expenses[0].splits, timestamp: "2024-03-26T10:00:00Z" },
+    { id: "msg2", groupId: "g1", senderId: "john", type: "expense", amount: 450, description: "Trip", splits: SEED_GROUPS[0].expenses[1].splits, timestamp: "2024-03-22T14:30:00Z" },
+    { id: "msg3", groupId: "g1", senderId: "wade", type: "expense", amount: 90, description: "Balloons", splits: SEED_GROUPS[0].expenses[2].splits, timestamp: "2024-03-21T09:15:00Z" },
+];
+
+// ─── Store ────────────────────────────────────────────────────────────────────
+
+type AppState = {
+    currentUserId: string;
+    groups: Group[];
+    messages: Message[];
+    addGroup: (g: Omit<Group, "id" | "expenses">) => string;
+    addExpense: (groupId: string, e: Omit<Expense, "id">) => void;
+    addMessage: (m: Omit<Message, "id">) => void;
+    settleDebt: (groupId: string, fromId: string, toId: string) => void;
+    getGroup: (id: string) => Group | undefined;
+    getGroupMessages: (groupId: string) => Message[];
+    getAllExpenses: () => (Expense & { groupName: string; groupEmoji: string })[];
+    getMyNetBalance: () => { totalOwed: number; totalOwes: number };
+    getFriendBalances: () => FriendBalance[];
+};
+
+export const useAppStore = create<AppState>((set, get) => ({
+    currentUserId: "me",
+    groups: SEED_GROUPS,
+    messages: SEED_MESSAGES,
+
+    addGroup: (group) => {
+        const id = `g${Date.now()}`;
+        set((s) => ({ groups: [...s.groups, { ...group, id, expenses: [] }] }));
+        return id;
+    },
+
+    addExpense: (groupId, expense) => {
+        const e: Expense = { ...expense, id: `e${Date.now()}` };
+        set((s) => ({ groups: s.groups.map((g) => g.id === groupId ? { ...g, expenses: [...g.expenses, e] } : g) }));
+    },
+
+    addMessage: (msg) => {
+        set((s) => ({ messages: [...s.messages, { ...msg, id: `msg${Date.now()}` }] }));
+    },
+
+    settleDebt: (groupId, fromId, toId) => {
+        set((s) => ({
+            groups: s.groups.map((g) => g.id !== groupId ? g : {
+                ...g,
+                expenses: g.expenses.map((exp) => exp.paidById !== toId ? exp : {
+                    ...exp,
+                    splits: exp.splits.map((sp) => sp.memberId === fromId ? { ...sp, settled: true } : sp),
+                }),
+            }),
+        }));
+    },
+
+    getGroup: (id) => get().groups.find((g) => g.id === id),
+
+    getGroupMessages: (groupId) =>
+        get().messages.filter((m) => m.groupId === groupId)
+            .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()),
+
+    getAllExpenses: () =>
+        get().groups.flatMap((g) => g.expenses.map((e) => ({ ...e, groupName: g.name, groupEmoji: g.emoji }))),
+
+    getMyNetBalance: () => {
+        const { currentUserId, groups } = get();
+        let totalOwed = 0, totalOwes = 0;
+        for (const g of groups) { const b = getNetBalance(currentUserId, g.expenses); totalOwed += b.owed; totalOwes += b.owes; }
+        return { totalOwed: parseFloat(totalOwed.toFixed(2)), totalOwes: parseFloat(totalOwes.toFixed(2)) };
+    },
+
+    getFriendBalances: () => computeFriendBalances(get().currentUserId, get().groups),
+}));import { Ionicons } from "@expo/vector-icons";
+import { LinearGradient } from "expo-linear-gradient";
+import { useRouter } from "expo-router";
+import React, { useEffect, useRef } from "react";
+import {
+  Animated,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
+import { FadeCard } from "../../components/ui";
+import { COLORS, FONT, GRAD, RADIUS, SHADOW, SPACE } from "../../constants/theme";
+import { useAppStore } from "../../store/useAppStore";
+import { usePrefsStore, useThemeColors } from "../../store/usePrefsStore";
+
+// ─── Avatar with initials ─────────────────────────────────────────────────────
+
+function ProfileAvatar({ initials, color, size = 72 }: { initials: string; color: string; size?: number }) {
+  const pulseAnim = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulseAnim, { toValue: 1.04, duration: 1800, useNativeDriver: true }),
+        Animated.timing(pulseAnim, { toValue: 1, duration: 1800, useNativeDriver: true }),
+      ])
+    ).start();
+  }, []);
+
+  return (
+    <Animated.View style={{ transform: [{ scale: pulseAnim }] }}>
+      <View style={[styles.avatarOuter, { width: size + 10, height: size + 10, borderRadius: (size + 10) / 2 }]}>
+        <View style={[styles.avatarInner, { width: size, height: size, borderRadius: size / 2, backgroundColor: color }]}>
+          <Text style={{ color: "#fff", fontSize: size * 0.34, fontWeight: "800" }}>{initials}</Text>
+        </View>
+      </View>
+    </Animated.View>
+  );
+}
+
+// ─── Menu Row ─────────────────────────────────────────────────────────────────
+
+type MenuRowProps = {
+  icon: string;
+  label: string;
+  sublabel?: string;
+  value?: string;
+  valueColor?: string;
+  iconBg?: string;
+  iconColor?: string;
+  isDanger?: boolean;
+  isLast?: boolean;
+  onPress: () => void;
+  themeColors: ReturnType<typeof useThemeColors>;
+};
+
+function MenuRow({
+  icon, label, sublabel, value, valueColor, iconBg, iconColor,
+  isDanger, isLast, onPress, themeColors,
+}: MenuRowProps) {
+  const scaleAnim = useRef(new Animated.Value(1)).current;
+  const onIn = () => Animated.spring(scaleAnim, { toValue: 0.97, useNativeDriver: true, tension: 200, friction: 10 }).start();
+  const onOut = () => Animated.spring(scaleAnim, { toValue: 1, useNativeDriver: true, tension: 200, friction: 10 }).start();
+
+  const resolvedIconColor = iconColor ?? (isDanger ? COLORS.danger : COLORS.primary);
+  const resolvedIconBg = iconBg ?? (isDanger ? `${COLORS.danger}18` : "#FFF3E0");
+
+  return (
+    <TouchableOpacity onPress={onPress} onPressIn={onIn} onPressOut={onOut} activeOpacity={1}>
+      <Animated.View
+        style={[
+          styles.menuRow,
+          { borderBottomColor: themeColors.border, transform: [{ scale: scaleAnim }] },
+          isLast && { borderBottomWidth: 0 },
+        ]}
+      >
+        <View style={[styles.menuIconBox, { backgroundColor: resolvedIconBg }]}>
+          <Ionicons name={icon as any} size={20} color={resolvedIconColor} />
+        </View>
+        <View style={styles.menuCenter}>
+          <Text style={[styles.menuLabel, { color: isDanger ? COLORS.danger : themeColors.textPrimary }]}>
+            {label}
+          </Text>
+          {sublabel ? (
+            <Text style={[styles.menuSublabel, { color: themeColors.textMuted }]}>{sublabel}</Text>
+          ) : null}
+        </View>
+        {value ? (
+          <Text style={[styles.menuValue, { color: valueColor ?? themeColors.textMuted }]}>{value}</Text>
+        ) : null}
+        {!isDanger && (
+          <Ionicons name="chevron-forward" size={15} color={themeColors.textMuted} />
+        )}
+      </Animated.View>
+    </TouchableOpacity>
+  );
+}
+
+// ─── Section Block ────────────────────────────────────────────────────────────
+
+function Section({
+  title, children, delay, themeColors,
+}: {
+  title: string;
+  children: React.ReactNode;
+  delay: number;
+  themeColors: ReturnType<typeof useThemeColors>;
+}) {
+  return (
+    <FadeCard delay={delay} style={styles.sectionWrap}>
+      <Text style={[styles.sectionTitle, { color: themeColors.textMuted }]}>{title}</Text>
+      <View style={[styles.sectionCard, { backgroundColor: themeColors.card, borderColor: themeColors.border }]}>
+        {children}
+      </View>
+    </FadeCard>
+  );
+}
+
+// ─── Main Screen ──────────────────────────────────────────────────────────────
+
+export default function ProfileScreen() {
+  const router = useRouter();
+  const { getMyNetBalance, getAllExpenses, groups } = useAppStore();
+  const { profile, theme, language, currency } = usePrefsStore();
+  const themeColors = useThemeColors();
+
+  const { totalOwed, totalOwes } = getMyNetBalance();
+  const allExp = getAllExpenses();
+  const totalSpent = allExp.filter((e) => e.paidById === "me").reduce((s, e) => s + e.amount, 0);
+
+  return (
+    <View style={[styles.root, { backgroundColor: themeColors.bg }]}>
+      {/* ── Gradient Header ── */}
+      <LinearGradient colors={GRAD} style={styles.header}>
+        <SafeAreaView edges={["top"]}>
+          {/* Avatar + name */}
+          <FadeCard delay={0} style={styles.hero}>
+            <ProfileAvatar initials={profile.initials} color={profile.avatarColor} size={72} />
+            <Text style={styles.heroName}>{profile.name}</Text>
+            <Text style={styles.heroUsername}>{profile.username}</Text>
+            {profile.bio ? <Text style={styles.heroBio}>{profile.bio}</Text> : null}
+          </FadeCard>
+
+          {/* Stats strip */}
+          <FadeCard delay={120}>
+            <View style={styles.statsRow}>
+              <View style={styles.statItem}>
+                <Text style={styles.statAmt}>{groups.length}</Text>
+                <Text style={styles.statLbl}>Groups</Text>
+              </View>
+              <View style={styles.statDivider} />
+              <View style={styles.statItem}>
+                <Text style={styles.statAmt}>{allExp.length}</Text>
+                <Text style={styles.statLbl}>Expenses</Text>
+              </View>
+              <View style={styles.statDivider} />
+              <View style={styles.statItem}>
+                <Text style={styles.statAmt}>${totalSpent.toFixed(0)}</Text>
+                <Text style={styles.statLbl}>Paid out</Text>
+              </View>
+            </View>
+          </FadeCard>
+        </SafeAreaView>
+      </LinearGradient>
+
+      {/* ── White Body ── */}
+      <ScrollView
+        style={[styles.scroll, { backgroundColor: themeColors.bg }]}
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+      >
+        {/* Balance card */}
+        <FadeCard delay={80}>
+          <View style={[styles.balanceCard, { backgroundColor: themeColors.card }]}>
+            <View style={styles.balanceItem}>
+              <View style={[styles.balanceIconBox, { backgroundColor: "#E8F5E9" }]}>
+                <Ionicons name="arrow-down-circle" size={18} color={COLORS.success} />
+              </View>
+              <View>
+                <Text style={[styles.balanceLbl, { color: themeColors.textMuted }]}>Owed to you</Text>
+                <Text style={[styles.balanceAmt, { color: COLORS.success }]}>${totalOwed.toFixed(2)}</Text>
+              </View>
+            </View>
+            <View style={[styles.balanceDivider, { backgroundColor: themeColors.border }]} />
+            <View style={styles.balanceItem}>
+              <View style={[styles.balanceIconBox, { backgroundColor: "#FFEBEE" }]}>
+                <Ionicons name="arrow-up-circle" size={18} color={COLORS.danger} />
+              </View>
+              <View>
+                <Text style={[styles.balanceLbl, { color: themeColors.textMuted }]}>You owe</Text>
+                <Text style={[styles.balanceAmt, { color: COLORS.danger }]}>${totalOwes.toFixed(2)}</Text>
+              </View>
+            </View>
+          </View>
+        </FadeCard>
+
+        {/* Account */}
+        <Section title="ACCOUNT" delay={140} themeColors={themeColors}>
+          <MenuRow
+            icon="person-circle-outline"
+            label="Edit Profile"
+            sublabel="Name, username, bio"
+            onPress={() => router.push("/profile/edit")}
+            themeColors={themeColors}
+          />
+          <MenuRow
+            icon="notifications-outline"
+            label="Notifications"
+            sublabel="Push alerts & reminders"
+            onPress={() => router.push("/profile/notifications")}
+            themeColors={themeColors}
+            isLast
+          />
+        </Section>
+
+        {/* Preferences */}
+        <Section title="PREFERENCES" delay={220} themeColors={themeColors}>
+          <MenuRow
+            icon="cash-outline"
+            label="Currency"
+            value={currency}
+            iconBg="#E8F5E9"
+            iconColor={COLORS.success}
+            onPress={() => router.push("/profile/currency")}
+            themeColors={themeColors}
+          />
+          <MenuRow
+            icon={theme === "dark" ? "moon" : "sunny-outline"}
+            label="Theme"
+            value={theme === "dark" ? "Dark" : "Light"}
+            iconBg={theme === "dark" ? "#1A1A2E" : "#FFF3E0"}
+            iconColor={theme === "dark" ? "#818CF8" : "#FF9F43"}
+            onPress={() => router.push("/profile/theme")}
+            themeColors={themeColors}
+          />
+          <MenuRow
+            icon="language-outline"
+            label="Language"
+            value={language}
+            iconBg="#E3F2FD"
+            iconColor="#2196F3"
+            onPress={() => router.push("/profile/language")}
+            themeColors={themeColors}
+            isLast
+          />
+        </Section>
+
+        {/* More */}
+        <Section title="MORE" delay={300} themeColors={themeColors}>
+          <MenuRow
+            icon="shield-checkmark-outline"
+            label="Privacy Policy"
+            iconBg="#F3E5F5"
+            iconColor="#9C27B0"
+            onPress={() => { }}
+            themeColors={themeColors}
+          />
+          <MenuRow
+            icon="help-circle-outline"
+            label="Help & Support"
+            iconBg="#E0F7FA"
+            iconColor="#00BCD4"
+            onPress={() => { }}
+            themeColors={themeColors}
+          />
+          <MenuRow
+            icon="log-out-outline"
+            label="Sign Out"
+            isDanger
+            onPress={() => { }}
+            themeColors={themeColors}
+            isLast
+          />
+        </Section>
+
+        {/* Version */}
+        <FadeCard delay={380}>
+          <Text style={[styles.version, { color: themeColors.textMuted }]}>Splitty v1.0.0</Text>
+        </FadeCard>
+
+        <View style={{ height: 100 }} />
+      </ScrollView>
+    </View>
+  );
+}
+
+// ─── Styles ───────────────────────────────────────────────────────────────────
+
+const styles = StyleSheet.create({
+  root: { flex: 1 },
+  header: { paddingBottom: SPACE.xl + 4, paddingHorizontal: SPACE.xl },
+  hero: { alignItems: "center", paddingTop: SPACE.md, paddingBottom: SPACE.lg, gap: 4 },
+  avatarOuter: {
+    backgroundColor: "rgba(255,255,255,0.25)",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: SPACE.sm,
+  },
+  avatarInner: { alignItems: "center", justifyContent: "center" },
+  heroName: { fontSize: FONT.xxl, fontWeight: FONT.black, color: "#fff", letterSpacing: -0.5 },
+  heroUsername: { fontSize: FONT.sm, color: "rgba(255,255,255,0.65)" },
+  heroBio: {
+    fontSize: FONT.sm, color: "rgba(255,255,255,0.75)",
+    fontStyle: "italic", marginTop: 4, textAlign: "center",
+  },
+  statsRow: {
+    flexDirection: "row",
+    backgroundColor: "rgba(255,255,255,0.18)",
+    borderRadius: RADIUS.xl,
+    padding: SPACE.md,
+  },
+  statItem: { flex: 1, alignItems: "center" },
+  statAmt: { fontSize: FONT.xl, fontWeight: FONT.black, color: "#fff", letterSpacing: -0.3 },
+  statLbl: { fontSize: FONT.xs, color: "rgba(255,255,255,0.65)", marginTop: 2 },
+  statDivider: { width: 1, backgroundColor: "rgba(255,255,255,0.25)", marginVertical: SPACE.xs },
+  scroll: { flex: 1, borderTopLeftRadius: RADIUS.xxl + 4, borderTopRightRadius: RADIUS.xxl + 4, marginTop: -RADIUS.xxl },
+  scrollContent: { paddingTop: SPACE.xl, paddingHorizontal: SPACE.xl },
+  balanceCard: {
+    flexDirection: "row", borderRadius: RADIUS.xl,
+    padding: SPACE.lg, marginBottom: SPACE.md, ...SHADOW.sm,
+  },
+  balanceItem: { flex: 1, flexDirection: "row", alignItems: "center", gap: SPACE.sm },
+  balanceIconBox: { width: 36, height: 36, borderRadius: RADIUS.md, alignItems: "center", justifyContent: "center" },
+  balanceDivider: { width: 1, marginVertical: SPACE.xs },
+  balanceLbl: { fontSize: FONT.xs },
+  balanceAmt: { fontSize: FONT.lg, fontWeight: FONT.black, letterSpacing: -0.3 },
+  sectionWrap: { marginBottom: SPACE.lg },
+  sectionTitle: {
+    fontSize: FONT.xs, fontWeight: FONT.black, letterSpacing: 1.2,
+    textTransform: "uppercase", marginBottom: SPACE.sm,
+  },
+  sectionCard: {
+    borderRadius: RADIUS.xl, overflow: "hidden",
+    borderWidth: 1, ...SHADOW.sm,
+  },
+  menuRow: {
+    flexDirection: "row", alignItems: "center",
+    paddingHorizontal: SPACE.md, paddingVertical: SPACE.md + 2,
+    gap: SPACE.md, borderBottomWidth: 1,
+  },
+  menuIconBox: {
+    width: 38, height: 38, borderRadius: RADIUS.md,
+    alignItems: "center", justifyContent: "center",
+  },
+  menuCenter: { flex: 1 },
+  menuLabel: { fontSize: FONT.base, fontWeight: FONT.semibold },
+  menuSublabel: { fontSize: FONT.xs, marginTop: 2 },
+  menuValue: { fontSize: FONT.sm, fontWeight: FONT.medium },
+  version: { fontSize: FONT.xs, textAlign: "center", paddingVertical: SPACE.md },
+});import { Ionicons } from "@expo/vector-icons";
+import { LinearGradient } from "expo-linear-gradient";
+import { useRouter } from "expo-router";
+import React, { useRef } from "react";
+import {
+    Animated,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TouchableOpacity,
+    View,
+} from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
+import { FadeCard } from "../../components/ui";
+import { COLORS, FONT, GRAD, RADIUS, SHADOW, SPACE } from "../../constants/theme";
+import { ThemeMode, usePrefsStore, useThemeColors } from "../../store/usePrefsStore";
+
+// ─── Theme Option Card ────────────────────────────────────────────────────────
+
+function ThemeCard({
+    mode,
+    label,
+    description,
+    isSelected,
+    onSelect,
+    delay,
+}: {
+    mode: ThemeMode;
+    label: string;
+    description: string;
+    isSelected: boolean;
+    onSelect: () => void;
+    delay: number;
+}) {
+    const scaleAnim = useRef(new Animated.Value(1)).current;
+    const onIn = () => Animated.spring(scaleAnim, { toValue: 0.97, useNativeDriver: true, tension: 200, friction: 10 }).start();
+    const onOut = () => Animated.spring(scaleAnim, { toValue: 1, useNativeDriver: true, tension: 200, friction: 10 }).start();
+
+    const isDark = mode === "dark";
+
+    // Mini app preview colors
+    const previewBg = isDark ? "#121212" : "#FFF8F0";
+    const previewCard = isDark ? "#1E1E1E" : "#FFFFFF";
+    const previewText = isDark ? "#F5F5F5" : "#1A1A1A";
+    const previewMuted = isDark ? "#666" : "#AAA";
+
+    return (
+        <FadeCard delay={delay}>
+            <TouchableOpacity onPressIn={onIn} onPressOut={onOut} onPress={onSelect} activeOpacity={1}>
+                <Animated.View
+                    style={[
+                        styles.themeCard,
+                        { backgroundColor: previewBg, borderColor: isSelected ? COLORS.primary : "transparent" },
+                        { transform: [{ scale: scaleAnim }] },
+                    ]}
+                >
+                    {/* Mini preview */}
+                    <View style={[styles.previewHeader, { backgroundColor: isDark ? "#1A1A1A" : "#FF6B35" }]}>
+                        <View style={styles.previewHeaderDots}>
+                            <View style={[styles.dot, { backgroundColor: "rgba(255,255,255,0.5)" }]} />
+                            <View style={[styles.dot, { width: 40, backgroundColor: "rgba(255,255,255,0.5)" }]} />
+                        </View>
+                        <View style={styles.previewBalanceRow}>
+                            <View style={[styles.previewBalanceCard, { backgroundColor: "rgba(0,0,0,0.18)" }]}>
+                                <View style={[styles.previewLine, { width: 30, backgroundColor: "rgba(255,255,255,0.5)" }]} />
+                                <View style={[styles.previewLine, { width: 50, backgroundColor: "rgba(255,255,255,0.8)", height: 8 }]} />
+                            </View>
+                            <View style={[styles.previewBalanceCard, { backgroundColor: "rgba(0,0,0,0.18)" }]}>
+                                <View style={[styles.previewLine, { width: 30, backgroundColor: "rgba(255,255,255,0.5)" }]} />
+                                <View style={[styles.previewLine, { width: 50, backgroundColor: "rgba(255,255,255,0.8)", height: 8 }]} />
+                            </View>
+                        </View>
+                    </View>
+
+                    <View style={[styles.previewBody, { backgroundColor: previewBg }]}>
+                        {[1, 2].map((i) => (
+                            <View key={i} style={[styles.previewRow, { backgroundColor: previewCard }]}>
+                                <View style={[styles.previewRowIcon, { backgroundColor: isDark ? "#2A1F1A" : "#FFF3E0" }]} />
+                                <View style={{ flex: 1, gap: 4 }}>
+                                    <View style={[styles.previewLine, { width: "60%", backgroundColor: previewText }]} />
+                                    <View style={[styles.previewLine, { width: "35%", backgroundColor: previewMuted }]} />
+                                </View>
+                            </View>
+                        ))}
+                    </View>
+
+                    {/* Label row */}
+                    <View style={styles.themeCardFooter}>
+                        <View style={styles.themeCardLabel}>
+                            <Ionicons
+                                name={isDark ? "moon" : "sunny"}
+                                size={20}
+                                color={isDark ? "#818CF8" : "#FF9F43"}
+                            />
+                            <View>
+                                <Text style={[styles.themeCardName, { color: previewText }]}>{label}</Text>
+                                <Text style={[styles.themeCardDesc, { color: previewMuted }]}>{description}</Text>
+                            </View>
+                        </View>
+
+                        {/* Checkmark */}
+                        <View style={[styles.checkCircle, isSelected && { backgroundColor: COLORS.primary, borderColor: COLORS.primary }]}>
+                            {isSelected && <Ionicons name="checkmark" size={14} color="#fff" />}
+                        </View>
+                    </View>
+                </Animated.View>
+            </TouchableOpacity>
+        </FadeCard>
+    );
+}
+
+// ─── Main Screen ──────────────────────────────────────────────────────────────
+
+export default function ThemeScreen() {
+    const router = useRouter();
+    const { theme, setTheme } = usePrefsStore();
+    const themeColors = useThemeColors();
+
+    const options: { mode: ThemeMode; label: string; description: string }[] = [
+        { mode: "light", label: "Light", description: "Clean & bright interface" },
+        { mode: "dark", label: "Dark", description: "Easy on the eyes at night" },
+    ];
+
+    return (
+        <View style={[styles.root, { backgroundColor: themeColors.bg }]}>
+            <LinearGradient colors={GRAD} style={styles.header}>
+                <SafeAreaView edges={["top"]}>
+                    <View style={styles.headerRow}>
+                        <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
+                            <Ionicons name="arrow-back" size={22} color="#fff" />
+                        </TouchableOpacity>
+                        <Text style={styles.headerTitle}>Appearance</Text>
+                        <View style={{ width: 38 }} />
+                    </View>
+
+                    <FadeCard delay={0}>
+                        <View style={styles.currentBadge}>
+                            <Ionicons
+                                name={theme === "dark" ? "moon" : "sunny-outline"}
+                                size={18}
+                                color="#fff"
+                            />
+                            <Text style={styles.currentBadgeText}>
+                                Currently using <Text style={{ fontWeight: FONT.black }}>{theme === "dark" ? "Dark" : "Light"}</Text> mode
+                            </Text>
+                        </View>
+                    </FadeCard>
+                </SafeAreaView>
+            </LinearGradient>
+
+            <ScrollView
+                style={[styles.scroll, { backgroundColor: themeColors.bg }]}
+                contentContainerStyle={styles.scrollContent}
+                showsVerticalScrollIndicator={false}
+            >
+                <FadeCard delay={0}>
+                    <Text style={[styles.sectionLabel, { color: themeColors.textMuted }]}>CHOOSE THEME</Text>
+                </FadeCard>
+
+                {options.map((opt, i) => (
+                    <ThemeCard
+                        key={opt.mode}
+                        mode={opt.mode}
+                        label={opt.label}
+                        description={opt.description}
+                        isSelected={theme === opt.mode}
+                        onSelect={() => setTheme(opt.mode)}
+                        delay={i * 80}
+                    />
+                ))}
+
+                <FadeCard delay={200}>
+                    <View style={[styles.infoBanner, { backgroundColor: themeColors.cardAlt, borderColor: themeColors.border }]}>
+                        <Ionicons name="information-circle-outline" size={18} color={COLORS.primary} />
+                        <Text style={[styles.infoText, { color: themeColors.textSecondary }]}>
+                            Theme changes apply instantly across the entire app.
+                        </Text>
+                    </View>
+                </FadeCard>
+
+                <View style={{ height: 80 }} />
+            </ScrollView>
+        </View>
+    );
+}
+
+// ─── Styles ───────────────────────────────────────────────────────────────────
+
+const styles = StyleSheet.create({
+    root: { flex: 1 },
+    header: { paddingBottom: SPACE.xl, paddingHorizontal: SPACE.xl },
+    headerRow: {
+        flexDirection: "row", alignItems: "center",
+        justifyContent: "space-between", paddingTop: SPACE.xs, marginBottom: SPACE.lg,
+    },
+    backBtn: {
+        width: 38, height: 38, borderRadius: 19,
+        backgroundColor: "rgba(255,255,255,0.2)",
+        alignItems: "center", justifyContent: "center",
+    },
+    headerTitle: { fontSize: FONT.lg, fontWeight: FONT.bold, color: "#fff" },
+    currentBadge: {
+        flexDirection: "row", alignItems: "center", gap: SPACE.sm,
+        backgroundColor: "rgba(255,255,255,0.18)",
+        borderRadius: RADIUS.xl, paddingHorizontal: SPACE.md, paddingVertical: SPACE.sm,
+        alignSelf: "flex-start",
+    },
+    currentBadgeText: { fontSize: FONT.sm, color: "#fff" },
+    scroll: { flex: 1, borderTopLeftRadius: RADIUS.xxl + 4, borderTopRightRadius: RADIUS.xxl + 4, marginTop: -RADIUS.xxl },
+    scrollContent: { paddingTop: SPACE.xl, paddingHorizontal: SPACE.xl },
+    sectionLabel: {
+        fontSize: FONT.xs, fontWeight: FONT.black,
+        letterSpacing: 1.2, textTransform: "uppercase", marginBottom: SPACE.md,
+    },
+    themeCard: {
+        borderRadius: RADIUS.xl, marginBottom: SPACE.md,
+        borderWidth: 2, overflow: "hidden", ...SHADOW.md,
+    },
+    previewHeader: {
+        height: 90, padding: SPACE.md,
+    },
+    previewHeaderDots: { flexDirection: "row", gap: SPACE.sm, marginBottom: SPACE.sm },
+    dot: { width: 6, height: 6, borderRadius: 3 },
+    previewBalanceRow: { flexDirection: "row", gap: SPACE.sm, marginTop: SPACE.xs },
+    previewBalanceCard: {
+        flex: 1, borderRadius: 8, padding: SPACE.sm, gap: 4,
+    },
+    previewBody: { padding: SPACE.sm, gap: SPACE.sm },
+    previewRow: {
+        flexDirection: "row", alignItems: "center", gap: SPACE.sm,
+        borderRadius: 10, padding: SPACE.sm,
+    },
+    previewRowIcon: { width: 28, height: 28, borderRadius: 8 },
+    previewLine: { height: 6, borderRadius: 3 },
+    themeCardFooter: {
+        flexDirection: "row", alignItems: "center", justifyContent: "space-between",
+        paddingHorizontal: SPACE.lg, paddingVertical: SPACE.md,
+    },
+    themeCardLabel: { flexDirection: "row", alignItems: "center", gap: SPACE.md },
+    themeCardName: { fontSize: FONT.md, fontWeight: FONT.bold },
+    themeCardDesc: { fontSize: FONT.xs, marginTop: 2 },
+    checkCircle: {
+        width: 26, height: 26, borderRadius: 13,
+        borderWidth: 2, borderColor: "#ccc",
+        alignItems: "center", justifyContent: "center",
+    },
+    infoBanner: {
+        flexDirection: "row", alignItems: "flex-start", gap: SPACE.sm,
+        borderRadius: RADIUS.lg, padding: SPACE.md, borderWidth: 1,
+    },
+    infoText: { flex: 1, fontSize: FONT.sm, lineHeight: 20 },
+});import { Ionicons } from "@expo/vector-icons";
+import { LinearGradient } from "expo-linear-gradient";
+import { useRouter } from "expo-router";
+import React, { useRef } from "react";
+import {
+    Animated,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TouchableOpacity,
+    View,
+} from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
+import { FadeCard } from "../../components/ui";
+import { COLORS, FONT, GRAD, RADIUS, SHADOW, SPACE } from "../../constants/theme";
+import { Language, usePrefsStore, useThemeColors } from "../../store/usePrefsStore";
+
+// ─── Language options ─────────────────────────────────────────────────────────
+
+const LANGUAGES: { code: Language; nativeName: string; flag: string; region: string }[] = [
+    { code: "English", nativeName: "English", flag: "🇺🇸", region: "United States" },
+    { code: "Hindi", nativeName: "हिन्दी", flag: "🇮🇳", region: "India" },
+    { code: "Spanish", nativeName: "Español", flag: "🇪🇸", region: "Spain / Latin America" },
+    { code: "French", nativeName: "Français", flag: "🇫🇷", region: "France" },
+    { code: "German", nativeName: "Deutsch", flag: "🇩🇪", region: "Germany" },
+    { code: "Japanese", nativeName: "日本語", flag: "🇯🇵", region: "Japan" },
+];
+
+// ─── Language Row ─────────────────────────────────────────────────────────────
+
+function LangRow({
+    lang,
+    isSelected,
+    onSelect,
+    isLast,
+    themeColors,
+    delay,
+}: {
+    lang: (typeof LANGUAGES)[0];
+    isSelected: boolean;
+    onSelect: () => void;
+    isLast: boolean;
+    themeColors: ReturnType<typeof useThemeColors>;
+    delay: number;
+}) {
+    const scaleAnim = useRef(new Animated.Value(1)).current;
+    const onIn = () => Animated.spring(scaleAnim, { toValue: 0.97, useNativeDriver: true, tension: 200, friction: 10 }).start();
+    const onOut = () => Animated.spring(scaleAnim, { toValue: 1, useNativeDriver: true, tension: 200, friction: 10 }).start();
+
+    return (
+        <FadeCard delay={delay}>
+            <TouchableOpacity onPressIn={onIn} onPressOut={onOut} onPress={onSelect} activeOpacity={1}>
+                <Animated.View
+                    style={[
+                        styles.langRow,
+                        { borderBottomColor: themeColors.border },
+                        isLast && { borderBottomWidth: 0 },
+                        isSelected && { backgroundColor: `${COLORS.primary}0C` },
+                        { transform: [{ scale: scaleAnim }] },
+                    ]}
+                >
+                    <Text style={styles.langFlag}>{lang.flag}</Text>
+                    <View style={styles.langCenter}>
+                        <Text style={[styles.langName, { color: themeColors.textPrimary }]}>{lang.nativeName}</Text>
+                        <Text style={[styles.langRegion, { color: themeColors.textMuted }]}>
+                            {lang.code} · {lang.region}
+                        </Text>
+                    </View>
+                    <View style={[styles.checkCircle, isSelected && { backgroundColor: COLORS.primary, borderColor: COLORS.primary }]}>
+                        {isSelected && <Ionicons name="checkmark" size={14} color="#fff" />}
+                    </View>
+                </Animated.View>
+            </TouchableOpacity>
+        </FadeCard>
+    );
+}
+
+// ─── Main Screen ──────────────────────────────────────────────────────────────
+
+export default function LanguageScreen() {
+    const router = useRouter();
+    const { language, setLanguage } = usePrefsStore();
+    const themeColors = useThemeColors();
+
+    return (
+        <View style={[styles.root, { backgroundColor: themeColors.bg }]}>
+            <LinearGradient colors={GRAD} style={styles.header}>
+                <SafeAreaView edges={["top"]}>
+                    <View style={styles.headerRow}>
+                        <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
+                            <Ionicons name="arrow-back" size={22} color="#fff" />
+                        </TouchableOpacity>
+                        <Text style={styles.headerTitle}>Language</Text>
+                        <View style={{ width: 38 }} />
+                    </View>
+
+                    <FadeCard delay={0}>
+                        <View style={styles.currentBadge}>
+                            <Text style={styles.currentFlag}>
+                                {LANGUAGES.find((l) => l.code === language)?.flag ?? "🌐"}
+                            </Text>
+                            <Text style={styles.currentBadgeText}>
+                                {language}
+                            </Text>
+                        </View>
+                    </FadeCard>
+                </SafeAreaView>
+            </LinearGradient>
+
+            <ScrollView
+                style={[styles.scroll, { backgroundColor: themeColors.bg }]}
+                contentContainerStyle={styles.scrollContent}
+                showsVerticalScrollIndicator={false}
+            >
+                <FadeCard delay={0}>
+                    <Text style={[styles.sectionLabel, { color: themeColors.textMuted }]}>SELECT LANGUAGE</Text>
+                </FadeCard>
+
+                <View style={[styles.card, { backgroundColor: themeColors.card, borderColor: themeColors.border }]}>
+                    {LANGUAGES.map((lang, i) => (
+                        <LangRow
+                            key={lang.code}
+                            lang={lang}
+                            isSelected={language === lang.code}
+                            onSelect={() => setLanguage(lang.code)}
+                            isLast={i === LANGUAGES.length - 1}
+                            themeColors={themeColors}
+                            delay={i * 50}
+                        />
+                    ))}
+                </View>
+
+                <FadeCard delay={320}>
+                    <View style={[styles.infoBanner, { backgroundColor: themeColors.cardAlt, borderColor: themeColors.border }]}>
+                        <Ionicons name="information-circle-outline" size={18} color={COLORS.primary} />
+                        <Text style={[styles.infoText, { color: themeColors.textSecondary }]}>
+                            Language affects display text only. Dates and numbers follow your system locale.
+                        </Text>
+                    </View>
+                </FadeCard>
+
+                <View style={{ height: 80 }} />
+            </ScrollView>
+        </View>
+    );
+}
+
+// ─── Styles ───────────────────────────────────────────────────────────────────
+
+const styles = StyleSheet.create({
+    root: { flex: 1 },
+    header: { paddingBottom: SPACE.xl, paddingHorizontal: SPACE.xl },
+    headerRow: {
+        flexDirection: "row", alignItems: "center",
+        justifyContent: "space-between", paddingTop: SPACE.xs, marginBottom: SPACE.lg,
+    },
+    backBtn: {
+        width: 38, height: 38, borderRadius: 19,
+        backgroundColor: "rgba(255,255,255,0.2)",
+        alignItems: "center", justifyContent: "center",
+    },
+    headerTitle: { fontSize: FONT.lg, fontWeight: FONT.bold, color: "#fff" },
+    currentBadge: {
+        flexDirection: "row", alignItems: "center", gap: SPACE.sm,
+        backgroundColor: "rgba(255,255,255,0.18)",
+        borderRadius: RADIUS.xl, paddingHorizontal: SPACE.md, paddingVertical: SPACE.sm,
+        alignSelf: "flex-start",
+    },
+    currentFlag: { fontSize: 20 },
+    currentBadgeText: { fontSize: FONT.sm, fontWeight: FONT.bold, color: "#fff" },
+    scroll: { flex: 1, borderTopLeftRadius: RADIUS.xxl + 4, borderTopRightRadius: RADIUS.xxl + 4, marginTop: -RADIUS.xxl },
+    scrollContent: { paddingTop: SPACE.xl, paddingHorizontal: SPACE.xl },
+    sectionLabel: {
+        fontSize: FONT.xs, fontWeight: FONT.black,
+        letterSpacing: 1.2, textTransform: "uppercase", marginBottom: SPACE.md,
+    },
+    card: {
+        borderRadius: RADIUS.xl, overflow: "hidden",
+        borderWidth: 1, ...SHADOW.sm, marginBottom: SPACE.lg,
+    },
+    langRow: {
+        flexDirection: "row", alignItems: "center",
+        paddingHorizontal: SPACE.md, paddingVertical: SPACE.md + 2,
+        gap: SPACE.md, borderBottomWidth: 1,
+    },
+    langFlag: { fontSize: 28, width: 36, textAlign: "center" },
+    langCenter: { flex: 1 },
+    langName: { fontSize: FONT.md, fontWeight: FONT.bold },
+    langRegion: { fontSize: FONT.xs, marginTop: 2 },
+    checkCircle: {
+        width: 26, height: 26, borderRadius: 13,
+        borderWidth: 2, borderColor: "#ccc",
+        alignItems: "center", justifyContent: "center",
+    },
+    infoBanner: {
+        flexDirection: "row", alignItems: "flex-start", gap: SPACE.sm,
+        borderRadius: RADIUS.lg, padding: SPACE.md, borderWidth: 1,
+    },
+    infoText: { flex: 1, fontSize: FONT.sm, lineHeight: 20 },
+});import { Ionicons } from "@expo/vector-icons";
+import { LinearGradient } from "expo-linear-gradient";
+import { useRouter } from "expo-router";
+import React, { useRef } from "react";
+import {
+    Animated,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TouchableOpacity,
+    View,
+} from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
+import { FadeCard } from "../../components/ui";
+import { COLORS, FONT, GRAD, RADIUS, SHADOW, SPACE } from "../../constants/theme";
+import { Currency, usePrefsStore, useThemeColors } from "../../store/usePrefsStore";
+
+const CURRENCIES: { code: Currency; name: string; symbol: string; flag: string }[] = [
+    { code: "USD", name: "US Dollar", symbol: "$", flag: "🇺🇸" },
+    { code: "INR", name: "Indian Rupee", symbol: "₹", flag: "🇮🇳" },
+    { code: "EUR", name: "Euro", symbol: "€", flag: "🇪🇺" },
+    { code: "GBP", name: "British Pound", symbol: "£", flag: "🇬🇧" },
+    { code: "JPY", name: "Japanese Yen", symbol: "¥", flag: "🇯🇵" },
+];
+
+function CurrencyRow({
+    item,
+    isSelected,
+    onSelect,
+    isLast,
+    themeColors,
+    delay,
+}: {
+    item: (typeof CURRENCIES)[0];
+    isSelected: boolean;
+    onSelect: () => void;
+    isLast: boolean;
+    themeColors: ReturnType<typeof useThemeColors>;
+    delay: number;
+}) {
+    const scaleAnim = useRef(new Animated.Value(1)).current;
+    const onIn = () => Animated.spring(scaleAnim, { toValue: 0.97, useNativeDriver: true, tension: 200, friction: 10 }).start();
+    const onOut = () => Animated.spring(scaleAnim, { toValue: 1, useNativeDriver: true, tension: 200, friction: 10 }).start();
+
+    return (
+        <FadeCard delay={delay}>
+            <TouchableOpacity onPressIn={onIn} onPressOut={onOut} onPress={onSelect} activeOpacity={1}>
+                <Animated.View
+                    style={[
+                        styles.row,
+                        { borderBottomColor: themeColors.border },
+                        isLast && { borderBottomWidth: 0 },
+                        isSelected && { backgroundColor: `${COLORS.primary}0C` },
+                        { transform: [{ scale: scaleAnim }] },
+                    ]}
+                >
+                    <Text style={styles.flag}>{item.flag}</Text>
+                    <View style={[styles.symbolBox, { backgroundColor: isSelected ? COLORS.primary : themeColors.sectionBg }]}>
+                        <Text style={[styles.symbol, { color: isSelected ? "#fff" : themeColors.textSecondary }]}>
+                            {item.symbol}
+                        </Text>
+                    </View>
+                    <View style={styles.rowCenter}>
+                        <Text style={[styles.rowCode, { color: themeColors.textPrimary }]}>{item.code}</Text>
+                        <Text style={[styles.rowName, { color: themeColors.textMuted }]}>{item.name}</Text>
+                    </View>
+                    <View style={[styles.checkCircle, isSelected && { backgroundColor: COLORS.primary, borderColor: COLORS.primary }]}>
+                        {isSelected && <Ionicons name="checkmark" size={14} color="#fff" />}
+                    </View>
+                </Animated.View>
+            </TouchableOpacity>
+        </FadeCard>
+    );
+}
+
+export default function CurrencyScreen() {
+    const router = useRouter();
+    const { currency, setCurrency } = usePrefsStore();
+    const themeColors = useThemeColors();
+
+    const selected = CURRENCIES.find((c) => c.code === currency)!;
+
+    return (
+        <View style={[styles.root, { backgroundColor: themeColors.bg }]}>
+            <LinearGradient colors={GRAD} style={styles.header}>
+                <SafeAreaView edges={["top"]}>
+                    <View style={styles.headerRow}>
+                        <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
+                            <Ionicons name="arrow-back" size={22} color="#fff" />
+                        </TouchableOpacity>
+                        <Text style={styles.headerTitle}>Currency</Text>
+                        <View style={{ width: 38 }} />
+                    </View>
+                    <FadeCard delay={0}>
+                        <View style={styles.currentBadge}>
+                            <Text style={{ fontSize: 20 }}>{selected.flag}</Text>
+                            <Text style={styles.currentText}>
+                                {selected.symbol} · {selected.name}
+                            </Text>
+                        </View>
+                    </FadeCard>
+                </SafeAreaView>
+            </LinearGradient>
+
+            <ScrollView
+                style={[styles.scroll, { backgroundColor: themeColors.bg }]}
+                contentContainerStyle={styles.scrollContent}
+                showsVerticalScrollIndicator={false}
+            >
+                <FadeCard delay={0}>
+                    <Text style={[styles.sectionLabel, { color: themeColors.textMuted }]}>SELECT CURRENCY</Text>
+                </FadeCard>
+
+                <View style={[styles.card, { backgroundColor: themeColors.card, borderColor: themeColors.border }]}>
+                    {CURRENCIES.map((c, i) => (
+                        <CurrencyRow
+                            key={c.code}
+                            item={c}
+                            isSelected={currency === c.code}
+                            onSelect={() => setCurrency(c.code)}
+                            isLast={i === CURRENCIES.length - 1}
+                            themeColors={themeColors}
+                            delay={i * 50}
+                        />
+                    ))}
+                </View>
+
+                <View style={{ height: 80 }} />
+            </ScrollView>
+        </View>
+    );
+}
+
+const styles = StyleSheet.create({
+    root: { flex: 1 },
+    header: { paddingBottom: SPACE.xl, paddingHorizontal: SPACE.xl },
+    headerRow: {
+        flexDirection: "row", alignItems: "center",
+        justifyContent: "space-between", paddingTop: SPACE.xs, marginBottom: SPACE.lg,
+    },
+    backBtn: {
+        width: 38, height: 38, borderRadius: 19,
+        backgroundColor: "rgba(255,255,255,0.2)",
+        alignItems: "center", justifyContent: "center",
+    },
+    headerTitle: { fontSize: FONT.lg, fontWeight: FONT.bold, color: "#fff" },
+    currentBadge: {
+        flexDirection: "row", alignItems: "center", gap: SPACE.sm,
+        backgroundColor: "rgba(255,255,255,0.18)",
+        borderRadius: RADIUS.xl, paddingHorizontal: SPACE.md, paddingVertical: SPACE.sm,
+        alignSelf: "flex-start",
+    },
+    currentText: { fontSize: FONT.sm, fontWeight: FONT.bold, color: "#fff" },
+    scroll: { flex: 1, borderTopLeftRadius: RADIUS.xxl + 4, borderTopRightRadius: RADIUS.xxl + 4, marginTop: -RADIUS.xxl },
+    scrollContent: { paddingTop: SPACE.xl, paddingHorizontal: SPACE.xl },
+    sectionLabel: {
+        fontSize: FONT.xs, fontWeight: FONT.black,
+        letterSpacing: 1.2, textTransform: "uppercase", marginBottom: SPACE.md,
+    },
+    card: { borderRadius: RADIUS.xl, overflow: "hidden", borderWidth: 1, ...SHADOW.sm, marginBottom: SPACE.lg },
+    row: {
+        flexDirection: "row", alignItems: "center",
+        paddingHorizontal: SPACE.md, paddingVertical: SPACE.md,
+        gap: SPACE.md, borderBottomWidth: 1,
+    },
+    flag: { fontSize: 26, width: 32, textAlign: "center" },
+    symbolBox: {
+        width: 36, height: 36, borderRadius: RADIUS.md,
+        alignItems: "center", justifyContent: "center",
+    },
+    symbol: { fontSize: FONT.lg, fontWeight: FONT.black },
+    rowCenter: { flex: 1 },
+    rowCode: { fontSize: FONT.md, fontWeight: FONT.bold },
+    rowName: { fontSize: FONT.xs, marginTop: 2 },
+    checkCircle: {
+        width: 26, height: 26, borderRadius: 13,
+        borderWidth: 2, borderColor: "#ccc",
+        alignItems: "center", justifyContent: "center",
+    },
+});

@@ -1,7 +1,7 @@
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import React, { useRef } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
     Animated,
     SectionList,
@@ -11,6 +11,7 @@ import {
     View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { GroupDetailSkeleton } from "../../components/Skeleton";
 import { Avatar, FadeCard } from "../../components/ui";
 import { COLORS, FONT, GRAD, RADIUS, SHADOW, SPACE } from "../../constants/theme";
 import { computeSettlements, getNetBalance, useAppStore } from "../../store/useAppStore";
@@ -109,8 +110,16 @@ export default function GroupDetailScreen() {
     const { id } = useLocalSearchParams<{ id: string }>();
     const router = useRouter();
     const { getGroup, currentUserId } = useAppStore();
-    const group = getGroup(id!);
 
+    const [isLoading, setIsLoading] = useState(true);
+    useEffect(() => {
+        const t = setTimeout(() => setIsLoading(false), 1200);
+        return () => clearTimeout(t);
+    }, []);
+
+    if (isLoading) return <GroupDetailSkeleton />;
+
+    const group = getGroup(id!);
     if (!group) return null;
 
     const bal = getNetBalance(currentUserId, group.expenses);

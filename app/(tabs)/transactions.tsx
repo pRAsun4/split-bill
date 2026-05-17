@@ -1,7 +1,7 @@
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   SectionList,
   StyleSheet,
@@ -11,6 +11,7 @@ import {
   View
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { TransactionsSkeleton } from "../../components/Skeleton";
 import { FadeCard } from "../../components/ui";
 import { COLORS, FONT, GRAD, RADIUS, SHADOW, SPACE } from "../../constants/theme";
 import { useAppStore } from "../../store/useAppStore";
@@ -82,6 +83,14 @@ export default function TransactionsScreen() {
   const { getAllExpenses, currentUserId, groups } = useAppStore();
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
+
+  const [isLoading, setIsLoading] = useState(true);
+  useEffect(() => {
+    const t = setTimeout(() => setIsLoading(false), 1300);
+    return () => clearTimeout(t);
+  }, []);
+
+  if (isLoading) return <TransactionsSkeleton />;
 
   const allExps = useMemo(() => {
     return getAllExpenses().map((e) => {
@@ -302,18 +311,3 @@ const styles = StyleSheet.create({
   emptyBox: { alignItems: "center", paddingVertical: 60, gap: SPACE.md },
   emptyText: { fontSize: FONT.lg, fontWeight: FONT.semibold, color: COLORS.textMuted },
 });
-
-
-
-// import React from 'react';
-// import { Text, View } from 'react-native';
-
-// export default function TransactionsScreen() {
-//   return (
-//     <View className="flex-1 bg-transparent items-center justify-center">
-//       <Text className="text-white text-xl">Transactions Feed</Text>
-//     </View>
-//   );
-// }
-
-

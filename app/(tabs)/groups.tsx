@@ -1,7 +1,7 @@
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
-import React from "react";
+import React, { useEffect, useState } from "react";
 import {
   Animated,
   StyleSheet,
@@ -10,6 +10,7 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { GroupsScreenSkeleton } from "../../components/Skeleton";
 import { Avatar, FadeCard, PressScale } from "../../components/ui";
 import { COLORS, FONT, GRAD, RADIUS, SHADOW, SPACE } from "../../constants/theme";
 import { computeSettlements, getNetBalance, useAppStore } from "../../store/useAppStore";
@@ -121,6 +122,14 @@ export default function GroupsScreen() {
   const router = useRouter();
   const { groups, currentUserId } = useAppStore();
 
+  const [isLoading, setIsLoading] = useState(true);
+  useEffect(() => {
+    const t = setTimeout(() => setIsLoading(false), 1400);
+    return () => clearTimeout(t);
+  }, []);
+
+  if (isLoading) return <GroupsScreenSkeleton />;
+
   const sorted = [...groups].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 
   return (
@@ -132,7 +141,7 @@ export default function GroupsScreen() {
               <Text style={styles.headerTitle}>Groups</Text>
               <Text style={styles.headerSub}>You are in {groups.length} groups.</Text>
             </View>
-            <TouchableOpacity style={styles.headerAvatar} onPress={() => router.push("/profile")}>
+            <TouchableOpacity style={styles.headerAvatar} onPress={() => router.push("/friend/me")}>
               <Avatar initials="ME" color="rgba(255,255,255,0.25)" size={38} />
             </TouchableOpacity>
           </View>
@@ -299,7 +308,6 @@ const styles = StyleSheet.create({
     letterSpacing: -0.3,
   },
 });
-
 
 
 

@@ -18,12 +18,12 @@ import { Language, usePrefsStore, useThemeColors } from "../../store/usePrefsSto
 // ─── Language options ─────────────────────────────────────────────────────────
 
 const LANGUAGES: { code: Language; nativeName: string; flag: string; region: string }[] = [
-    { code: "English", nativeName: "English", flag: "🇺🇸", region: "United States" },
-    { code: "Hindi", nativeName: "हिन्दी", flag: "🇮🇳", region: "India" },
-    { code: "Spanish", nativeName: "Español", flag: "🇪🇸", region: "Spain / Latin America" },
-    { code: "French", nativeName: "Français", flag: "🇫🇷", region: "France" },
-    { code: "German", nativeName: "Deutsch", flag: "🇩🇪", region: "Germany" },
-    { code: "Japanese", nativeName: "日本語", flag: "🇯🇵", region: "Japan" },
+    { code: "en" as Language, nativeName: "English", flag: "🇺🇸", region: "United States" },
+    { code: "hi" as Language, nativeName: "हिन्दी", flag: "🇮🇳", region: "India" },
+    { code: "es" as Language, nativeName: "Español", flag: "🇪🇸", region: "Spain / Latin America" },
+    { code: "fr" as Language, nativeName: "Français", flag: "🇫🇷", region: "France" },
+    { code: "de" as Language, nativeName: "Deutsch", flag: "🇩🇪", region: "Germany" },
+    { code: "ja" as Language, nativeName: "日本語", flag: "🇯🇵", region: "Japan" },
 ];
 
 // ─── Language Row ─────────────────────────────────────────────────────────────
