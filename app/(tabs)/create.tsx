@@ -3,6 +3,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
 import React, { useRef, useState } from "react";
 import {
+  ActivityIndicator,
   Alert,
   Animated,
   KeyboardAvoidingView,
@@ -17,30 +18,30 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Avatar, GradBtn } from "../../components/ui";
 import { COLORS, FONT, GRAD, RADIUS, SHADOW, SPACE } from "../../constants/theme";
-import { Member, useAppStore } from "../../store/useAppStore";
+import { ApiUser, usersApi } from "../../lib/api";
+import { useAppContext } from "../../lib/useAppContext";
+import { getAvatarColor, getInitials, useGroupStore } from "../../store/useGroupStore";
 
-// ─── Available friends to add ─────────────────────────────────────────────────
-
-const ALL_FRIENDS: Member[] = [
-  { id: "john", name: "John", initials: "JO", avatarColor: "#6C63FF" },
-  { id: "wade", name: "Wade Howard", initials: "WH", avatarColor: "#FF6584" },
-  { id: "guy", name: "Guy Warren", initials: "GW", avatarColor: "#43BCCD" },
-  { id: "jack", name: "Jack", initials: "JK", avatarColor: "#FF9F43" },
-  { id: "kim", name: "Kim", initials: "KM", avatarColor: "#EE5A24" },
-];
+// Search endpoint returns a partial user shape
+type SearchUser = Pick<ApiUser, "id" | "name" | "email" | "avatarUrl">;
 
 const GROUP_EMOJIS = ["🎂", "🎉", "🛍️", "✈️", "🏠", "🍕", "🎮", "💼", "⚽", "🎵"];
 
-// ─── Main Screen ──────────────────────────────────────────────────────────────
-
 export default function CreateGroupScreen() {
   const router = useRouter();
-  const { addGroup, currentUserId } = useAppStore();
+  const { tc, t } = useAppContext();
+  const { createGroup } = useGroupStore();
 
-  const [name, setName] = useState("");
+  const [name, setName]                 = useState("");
   const [selectedEmoji, setSelectedEmoji] = useState(GROUP_EMOJIS[0]);
-  const [selectedMembers, setSelectedMembers] = useState<string[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [selectedMembers, setSelectedMembers] = useState<SearchUser[]>([]);
+  const [loading, setLoading]           = useState(false);
+
+  // User search state
+  const [searchQuery, setSearchQuery]   = useState("");
+  const [searchResults, setSearchResults] = useState<SearchUser[]>([]);
+  const [searching, setSearching]       = useState(false);
+  const searchTimeout                   = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const shakeAnim = useRef(new Animated.Value(0)).current;
 
@@ -48,66 +49,84 @@ export default function CreateGroupScreen() {
     Animated.sequence([
       Animated.timing(shakeAnim, { toValue: 10, duration: 60, useNativeDriver: true }),
       Animated.timing(shakeAnim, { toValue: -10, duration: 60, useNativeDriver: true }),
-      Animated.timing(shakeAnim, { toValue: 6, duration: 50, useNativeDriver: true }),
-      Animated.timing(shakeAnim, { toValue: 0, duration: 50, useNativeDriver: true }),
+      Animated.timing(shakeAnim, { toValue: 6,  duration: 50, useNativeDriver: true }),
+      Animated.timing(shakeAnim, { toValue: 0,  duration: 50, useNativeDriver: true }),
     ]).start();
   };
 
-  const toggleMember = (id: string) => {
-    setSelectedMembers((prev) =>
-      prev.includes(id) ? prev.filter((m) => m !== id) : [...prev, id]
-    );
-  };
-
-  const handleCreate = () => {
-    if (!name.trim()) { shake(); return; }
-    if (selectedMembers.length === 0) {
-      Alert.alert("Add members", "Select at least one friend for the group.");
-      return;
-    }
-
-    setLoading(true);
-    const me: Member = { id: "me", name: "You", initials: "ME", avatarColor: COLORS.primary };
-    const members = [me, ...ALL_FRIENDS.filter((f) => selectedMembers.includes(f.id))];
-
-    const id = addGroup({
-      name: name.trim(),
-      emoji: selectedEmoji,
-      createdAt: new Date().toISOString().split("T")[0],
-      members,
-    });
-
-    setTimeout(() => {
-      setLoading(false);
-      router.replace(`/groups/${id}`);
+  const handleSearch = (q: string) => {
+    setSearchQuery(q);
+    if (searchTimeout.current) clearTimeout(searchTimeout.current);
+    if (q.trim().length < 2) { setSearchResults([]); return; }
+    searchTimeout.current = setTimeout(async () => {
+      setSearching(true);
+      const res = await usersApi.search(q.trim());
+      setSearching(false);
+      if (res.ok) {
+        // Filter out already selected members
+        const selectedIds = new Set(selectedMembers.map((m) => m.id));
+        setSearchResults(res.data.users.filter((u) => !selectedIds.has(u.id)));
+      }
     }, 400);
   };
 
+  const addMember = (user: SearchUser) => {
+    setSelectedMembers((prev) => [...prev, user]);
+    setSearchResults((prev) => prev.filter((u) => u.id !== user.id));
+    setSearchQuery("");
+  };
+
+  const removeMember = (userId: string) => {
+    setSelectedMembers((prev) => prev.filter((m) => m.id !== userId));
+  };
+
+  const handleCreate = async () => {
+    if (!name.trim()) { shake(); return; }
+    if (selectedMembers.length === 0) {
+      Alert.alert(t.groups.addFriends, "Select at least one friend for the group.");
+      return;
+    }
+    setLoading(true);
+    const group = await createGroup({
+      name: name.trim(),
+      iconEmoji: selectedEmoji,
+      memberIds: selectedMembers.map((m) => m.id),
+    });
+    setLoading(false);
+    if (group) {
+      router.replace(`/groups/${group.id}`);
+    } else {
+      Alert.alert("Error", "Could not create group. Please try again.");
+    }
+  };
+
   return (
-    <View style={{ flex: 1, backgroundColor: COLORS.bg }}>
+    <View style={[styles.root, { backgroundColor: tc.bg }]}>
       <LinearGradient colors={GRAD} style={styles.header}>
         <SafeAreaView edges={["top"]}>
           <View style={styles.headerRow}>
             <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
               <Ionicons name="close" size={22} color="#fff" />
             </TouchableOpacity>
-            <Text style={styles.headerTitle}>New Group</Text>
+            <Text style={styles.headerTitle}>{t.groups.newGroup}</Text>
             <View style={{ width: 38 }} />
           </View>
         </SafeAreaView>
       </LinearGradient>
 
       <KeyboardAvoidingView
-        style={styles.body}
+        style={[styles.body, { backgroundColor: tc.bg }]}
         behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
-        <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-
+        <ScrollView
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+        >
           {/* Emoji Picker */}
-          <Text style={styles.label}>GROUP ICON</Text>
+          <Text style={[styles.label, { color: tc.textMuted }]}>{t.groups.groupIcon.toUpperCase()}</Text>
           <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
+            horizontal showsHorizontalScrollIndicator={false}
             style={styles.emojiRow}
             contentContainerStyle={{ gap: SPACE.sm, paddingHorizontal: 2 }}
           >
@@ -115,7 +134,10 @@ export default function CreateGroupScreen() {
               <TouchableOpacity
                 key={e}
                 onPress={() => setSelectedEmoji(e)}
-                style={[styles.emojiBtn, selectedEmoji === e && styles.emojiBtnOn]}
+                style={[
+                  styles.emojiBtn, { backgroundColor: tc.card },
+                  selectedEmoji === e && styles.emojiBtnOn,
+                ]}
                 activeOpacity={0.8}
               >
                 <Text style={{ fontSize: 26 }}>{e}</Text>
@@ -124,15 +146,17 @@ export default function CreateGroupScreen() {
           </ScrollView>
 
           {/* Group name */}
-          <Text style={[styles.label, { marginTop: SPACE.lg }]}>GROUP NAME</Text>
-          <Animated.View style={[styles.inputWrap, { transform: [{ translateX: shakeAnim }] }]}>
-            <View style={styles.emojiPreview}>
+          <Text style={[styles.label, { color: tc.textMuted, marginTop: SPACE.lg }]}>
+            {t.groups.groupName.toUpperCase()}
+          </Text>
+          <Animated.View style={[styles.inputWrap, { backgroundColor: tc.card, transform: [{ translateX: shakeAnim }] }]}>
+            <View style={[styles.emojiPreview, { backgroundColor: tc.cardAlt }]}>
               <Text style={{ fontSize: 20 }}>{selectedEmoji}</Text>
             </View>
             <TextInput
-              style={styles.nameInput}
+              style={[styles.nameInput, { color: tc.textPrimary }]}
               placeholder="e.g. Weekend Trip, Birthday..."
-              placeholderTextColor={COLORS.textMuted}
+              placeholderTextColor={tc.textMuted}
               value={name}
               onChangeText={setName}
               returnKeyType="done"
@@ -140,49 +164,84 @@ export default function CreateGroupScreen() {
             />
           </Animated.View>
 
-          {/* Friends */}
-          <Text style={[styles.label, { marginTop: SPACE.xl }]}>ADD FRIENDS</Text>
-          <View style={styles.friendsGrid}>
-            {ALL_FRIENDS.map((f) => {
-              const isOn = selectedMembers.includes(f.id);
-              return (
-                <TouchableOpacity
-                  key={f.id}
-                  onPress={() => toggleMember(f.id)}
-                  style={[styles.friendChip, isOn && styles.friendChipOn]}
-                  activeOpacity={0.8}
-                >
-                  <Avatar initials={f.initials} color={f.avatarColor} size={36} />
-                  <Text style={[styles.friendChipName, isOn && { color: COLORS.primary }]}>
-                    {f.name.split(" ")[0]}
-                  </Text>
-                  {isOn && (
-                    <View style={styles.checkBadge}>
-                      <Ionicons name="checkmark" size={10} color="#fff" />
-                    </View>
-                  )}
-                </TouchableOpacity>
-              );
-            })}
+          {/* Friend Search */}
+          <Text style={[styles.label, { color: tc.textMuted, marginTop: SPACE.xl }]}>
+            {t.groups.addFriends.toUpperCase()}
+          </Text>
+
+          {/* Search input */}
+          <View style={[styles.searchBar, { backgroundColor: tc.card }]}>
+            <Ionicons name="search" size={16} color={tc.textMuted} />
+            <TextInput
+              style={[styles.searchInput, { color: tc.textPrimary }]}
+              placeholder="Search by name or email..."
+              placeholderTextColor={tc.textMuted}
+              value={searchQuery}
+              onChangeText={handleSearch}
+              autoCorrect={false}
+              autoCapitalize="none"
+            />
+            {searching && <ActivityIndicator size="small" color={COLORS.primary} />}
           </View>
 
-          {/* Selected summary */}
-          {selectedMembers.length > 0 && (
-            <View style={styles.selectedSummary}>
-              <Ionicons name="people" size={16} color={COLORS.primary} />
-              <Text style={styles.selectedSummaryText}>
-                You + {selectedMembers.length} friend{selectedMembers.length > 1 ? "s" : ""} selected
-              </Text>
+          {/* Search results */}
+          {searchResults.length > 0 && (
+            <View style={[styles.searchResults, { backgroundColor: tc.card, borderColor: tc.border }]}>
+              {searchResults.map((user: SearchUser) => (
+                <TouchableOpacity
+                  key={user.id}
+                  style={[styles.searchResultRow, { borderBottomColor: tc.border }]}
+                  onPress={() => addMember(user)}
+                  activeOpacity={0.8}
+                >
+                  <Avatar
+                    initials={getInitials(user.name)}
+                    color={getAvatarColor(user.id)}
+                    size={36}
+                  />
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.searchResultName, { color: tc.textPrimary }]}>{user.name}</Text>
+                    <Text style={[styles.searchResultEmail, { color: tc.textMuted }]}>{user.email}</Text>
+                  </View>
+                  <Ionicons name="add-circle" size={22} color={COLORS.primary} />
+                </TouchableOpacity>
+              ))}
             </View>
+          )}
+
+          {/* Selected members */}
+          {selectedMembers.length > 0 && (
+            <>
+              <Text style={[styles.selectedLabel, { color: tc.textMuted }]}>SELECTED</Text>
+              <View style={styles.selectedList}>
+                {selectedMembers.map((m) => (
+                  <View key={m.id} style={[styles.selectedChip, { backgroundColor: tc.cardAlt, borderColor: COLORS.primary }]}>
+                    <Avatar initials={getInitials(m.name)} color={getAvatarColor(m.id)} size={28} />
+                    <Text style={[styles.selectedChipName, { color: tc.textPrimary }]}>
+                      {m.name.split(" ")[0]}
+                    </Text>
+                    <TouchableOpacity onPress={() => removeMember(m.id)}>
+                      <Ionicons name="close-circle" size={18} color={tc.textMuted} />
+                    </TouchableOpacity>
+                  </View>
+                ))}
+              </View>
+
+              <View style={styles.selectedSummary}>
+                <Ionicons name="people" size={16} color={COLORS.primary} />
+                <Text style={styles.selectedSummaryText}>
+                  You + {selectedMembers.length} {t.groups.membersIn}
+                </Text>
+              </View>
+            </>
           )}
 
           <View style={{ height: SPACE.xxxl }} />
         </ScrollView>
 
-        {/* Create button */}
-        <View style={styles.footer}>
+        <View style={[styles.footer, { backgroundColor: tc.bg, borderTopColor: tc.border }]}>
           <GradBtn
-            label={loading ? "Creating..." : "Create Group"}
+            label={loading ? t.common.loading : t.groups.createGroup}
             onPress={handleCreate}
             icon="arrow-forward"
             disabled={loading || !name.trim() || selectedMembers.length === 0}
@@ -194,9 +253,8 @@ export default function CreateGroupScreen() {
   );
 }
 
-// ─── Styles ───────────────────────────────────────────────────────────────────
-
 const styles = StyleSheet.create({
+  root: { flex: 1 },
   header: { paddingBottom: SPACE.xl, paddingHorizontal: SPACE.xl },
   headerRow: {
     flexDirection: "row", alignItems: "center",
@@ -209,164 +267,63 @@ const styles = StyleSheet.create({
   },
   headerTitle: { fontSize: FONT.lg, fontWeight: FONT.bold, color: "#fff" },
   body: {
-    flex: 1, backgroundColor: COLORS.bg,
-    borderTopLeftRadius: RADIUS.xxl + 4,
-    borderTopRightRadius: RADIUS.xxl + 4,
-    marginTop: -RADIUS.xxl,
-    overflow: "hidden",
+    flex: 1, borderTopLeftRadius: RADIUS.xxl + 4,
+    borderTopRightRadius: RADIUS.xxl + 4, marginTop: -RADIUS.xxl, overflow: "hidden",
   },
   scrollContent: { paddingTop: SPACE.xl, paddingHorizontal: SPACE.xl },
-  label: {
-    fontSize: FONT.xs, fontWeight: FONT.black,
-    color: COLORS.textMuted, letterSpacing: 1.2,
-    textTransform: "uppercase", marginBottom: SPACE.sm,
-  },
+  label: { fontSize: FONT.xs, fontWeight: FONT.black, letterSpacing: 1.2, marginBottom: SPACE.sm },
   emojiRow: { marginBottom: SPACE.sm },
   emojiBtn: {
     width: 54, height: 54, borderRadius: RADIUS.lg,
-    backgroundColor: COLORS.card,
     alignItems: "center", justifyContent: "center",
-    borderWidth: 2, borderColor: "transparent",
-    ...SHADOW.sm,
+    borderWidth: 2, borderColor: "transparent", ...SHADOW.sm,
   },
-  emojiBtnOn: { borderColor: COLORS.primary, backgroundColor: "#FFF3E0" },
+  emojiBtnOn: { borderColor: COLORS.primary },
   inputWrap: {
     flexDirection: "row", alignItems: "center",
-    backgroundColor: COLORS.card, borderRadius: RADIUS.xl,
+    borderRadius: RADIUS.xl,
     paddingHorizontal: SPACE.md, paddingVertical: SPACE.sm,
     gap: SPACE.sm, ...SHADOW.sm,
   },
-  emojiPreview: {
-    width: 40, height: 40, borderRadius: RADIUS.md,
-    backgroundColor: "#FFF3E0", alignItems: "center", justifyContent: "center",
+  emojiPreview: { width: 40, height: 40, borderRadius: RADIUS.md, alignItems: "center", justifyContent: "center" },
+  nameInput: { flex: 1, fontSize: FONT.lg, fontWeight: FONT.medium },
+  searchBar: {
+    flexDirection: "row", alignItems: "center",
+    borderRadius: RADIUS.xl,
+    paddingHorizontal: SPACE.md, paddingVertical: SPACE.sm + 2,
+    gap: SPACE.sm, marginBottom: SPACE.sm, ...SHADOW.sm,
   },
-  nameInput: {
-    flex: 1, fontSize: FONT.lg, color: COLORS.textPrimary, fontWeight: FONT.medium,
+  searchInput: { flex: 1, fontSize: FONT.base },
+  searchResults: {
+    borderRadius: RADIUS.xl, borderWidth: 1,
+    marginBottom: SPACE.md, overflow: "hidden", ...SHADOW.sm,
   },
-  friendsGrid: {
-    flexDirection: "row", flexWrap: "wrap", gap: SPACE.sm,
+  searchResultRow: {
+    flexDirection: "row", alignItems: "center", gap: SPACE.md,
+    paddingHorizontal: SPACE.md, paddingVertical: SPACE.sm + 2,
+    borderBottomWidth: 1,
   },
-  friendChip: {
+  searchResultName: { fontSize: FONT.base, fontWeight: FONT.semibold },
+  searchResultEmail: { fontSize: FONT.xs, marginTop: 2 },
+  selectedLabel: {
+    fontSize: FONT.xs, fontWeight: FONT.black,
+    letterSpacing: 1.2, marginBottom: SPACE.sm, marginTop: SPACE.md,
+  },
+  selectedList: { flexDirection: "row", flexWrap: "wrap", gap: SPACE.sm, marginBottom: SPACE.md },
+  selectedChip: {
     flexDirection: "row", alignItems: "center", gap: SPACE.sm,
-    backgroundColor: COLORS.card, borderRadius: RADIUS.xl,
-    paddingHorizontal: SPACE.md, paddingVertical: SPACE.sm,
-    borderWidth: 2, borderColor: "transparent",
-    ...SHADOW.sm,
+    borderRadius: RADIUS.xl, paddingHorizontal: SPACE.md, paddingVertical: SPACE.sm,
+    borderWidth: 1.5,
   },
-  friendChipOn: { borderColor: COLORS.primary, backgroundColor: "#FFF3E0" },
-  friendChipName: {
-    fontSize: FONT.base, fontWeight: FONT.semibold, color: COLORS.textSecondary,
-  },
-  checkBadge: {
-    width: 18, height: 18, borderRadius: 9,
-    backgroundColor: COLORS.primary,
-    alignItems: "center", justifyContent: "center",
-  },
+  selectedChipName: { fontSize: FONT.sm, fontWeight: FONT.semibold },
   selectedSummary: {
     flexDirection: "row", alignItems: "center", gap: SPACE.sm,
     backgroundColor: "#FFF3E0", borderRadius: RADIUS.xl,
-    padding: SPACE.md, marginTop: SPACE.lg,
-    borderWidth: 1, borderColor: "#FFD166",
+    padding: SPACE.md, borderWidth: 1, borderColor: "#FFD166",
   },
-  selectedSummaryText: {
-    fontSize: FONT.sm, fontWeight: FONT.semibold, color: COLORS.primary,
-  },
+  selectedSummaryText: { fontSize: FONT.sm, fontWeight: FONT.semibold, color: COLORS.primary },
   footer: {
     paddingHorizontal: SPACE.xl, paddingBottom: SPACE.xl,
-    paddingTop: SPACE.md, backgroundColor: COLORS.bg,
-    borderTopWidth: 1, borderTopColor: COLORS.border,
+    paddingTop: SPACE.md, borderTopWidth: 1,
   },
 });
-
-
-
-
-
-// import { useRouter } from 'expo-router';
-// import { Check, ChevronDown, Type, Users, X } from 'lucide-react-native';
-// import React, { useState } from 'react';
-// import { Image, ScrollView, Text, TextInput, TouchableOpacity, View } from 'react-native';
-// import { SafeAreaView } from 'react-native-safe-area-context';
-
-// export default function CreateGroupScreen() {
-//   const router = useRouter();
-//   const [showFriends, setShowFriends] = useState(false);
-//   const [selectedFriends, setSelectedFriends] = useState<number[]>([]);
-
-//   // Demo Friends Data
-//   const demoFriends = [
-//     { id: 1, name: 'John Doe', avatar: 'https://avatar.iran.liara.run/public/3' },
-//     { id: 2, name: 'Wade Howard', avatar: 'https://avatar.iran.liara.run/public/4' },
-//     { id: 3, name: 'Guy Warren', avatar: 'https://avatar.iran.liara.run/public/5' },
-//   ];
-
-//   const toggleFriend = (id: number) => {
-//     setSelectedFriends(prev => 
-//       prev.includes(id) ? prev.filter(f => f !== id) : [...prev, id]
-//     );
-//   };
-
-//   return (
-//     <SafeAreaView className="flex-1 bg-primary">
-//       {/* 1. Header - Hardcoded: bg-[#FF7A51] */}
-//       <View className="flex-row justify-between items-center px-6 py-4 ">
-//         <TouchableOpacity onPress={() => router.back()}><X color="white" size={24} /></TouchableOpacity>
-//         <Text className="text-white text-xl font-bold">New Group</Text>
-//         <View className="w-6" />
-//       </View>
-
-//       <ScrollView className="flex-1 bg-transparent px-6 pt-6" showsVerticalScrollIndicator={false}>
-//         {/* 2. Group Name - Hardcoded: bg-white */}
-//         <View className="bg-white p-5 rounded-[28px] mb-4 shadow-sm">
-//           <Text className="text-gray-400 font-bold uppercase text-[10px] mb-2">Group Name</Text>
-//           <View className="flex-row items-center">
-//             <Type color="#FF7A51" size={20} /><TextInput placeholder="e.g. Goa Trip" className="flex-1 ml-3 text-lg font-bold text-gray-800" />
-//           </View>
-//         </View>
-
-//         {/* 3. Friends Selector with Dropdown Functionality */}
-//         <View className="bg-white rounded-[28px] mb-6 shadow-sm overflow-hidden">
-//           <TouchableOpacity 
-//             onPress={() => setShowFriends(!showFriends)}
-//             className="p-5 flex-row justify-between items-center border-b border-gray-50"
-//           >
-//             <View className="flex-row items-center">
-//               <Users color="#3B82F6" size={20} />
-//               <Text className="ml-3 text-lg font-medium text-gray-800">
-//                 {selectedFriends.length > 0 ? `${selectedFriends.length} Friends Selected` : "Select Friends"}
-//               </Text>
-//             </View>
-//             <ChevronDown color="#9CA3AF" size={20} style={{ transform: [{ rotate: showFriends ? '180deg' : '0deg' }] }} />
-//           </TouchableOpacity>
-
-//           {/* Demo Friends List Appearance */}
-//           {showFriends && (
-//             <View className="p-4 bg-gray-50/50">
-//               {demoFriends.map((friend) => (
-//                 <TouchableOpacity 
-//                   key={friend.id} 
-//                   onPress={() => toggleFriend(friend.id)}
-//                   className="flex-row justify-between items-center mb-4 last:mb-0"
-//                 >
-//                   <View className="flex-row items-center">
-//                     <Image source={{ uri: friend.avatar }} className="w-10 h-10 rounded-full" />
-//                     <Text className="ml-3 font-bold text-gray-700">{friend.name}</Text>
-//                   </View>
-//                   {selectedFriends.includes(friend.id) && <View className="bg-green-500 rounded-full p-1"><Check color="white" size={14} /></View>}
-//                 </TouchableOpacity>
-//               ))}
-//             </View>
-//           )}
-//         </View>
-
-//         {/* 4. Save Button - Hardcoded: bg-black */}
-//         <TouchableOpacity 
-//           className="bg-black py-5 rounded-[24px] items-center shadow-lg"
-//           onPress={() => router.push('/group/Chat-Room')} 
-//         >
-//           <Text className="text-white font-bold text-lg">Create & Start Chat</Text>
-//         </TouchableOpacity>
-//       </ScrollView>
-//     </SafeAreaView>
-//   );
-// }

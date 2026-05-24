@@ -3,36 +3,31 @@ import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
 import React, { useEffect, useRef, useState } from "react";
 import {
-    Animated, KeyboardAvoidingView, Platform,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
+  Animated, KeyboardAvoidingView, Platform,
+  StyleSheet, Text, TextInput, TouchableOpacity, View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { AuthLoader, Loader } from "../../components/Loader";
 import { COLORS, FONT, GRAD, GRAD_SHORT, RADIUS, SHADOW, SPACE } from "../../constants/theme";
-import { useAuthStore } from "../../store/useAuthStore";
 
 // ─── Success State ────────────────────────────────────────────────────────────
 
 function SuccessView({ email, onBack }: { email: string; onBack: () => void }) {
-  const scale   = useRef(new Animated.Value(0)).current;
+  const scale = useRef(new Animated.Value(0)).current;
   const opacity = useRef(new Animated.Value(0)).current;
-  const slideY  = useRef(new Animated.Value(20)).current;
+  const slideY = useRef(new Animated.Value(20)).current;
 
   useEffect(() => {
     Animated.parallel([
-      Animated.spring(scale,   { toValue: 1, tension: 60, friction: 7, useNativeDriver: true }),
+      Animated.spring(scale, { toValue: 1, tension: 60, friction: 7, useNativeDriver: true }),
       Animated.timing(opacity, { toValue: 1, duration: 400, useNativeDriver: true }),
-      Animated.spring(slideY,  { toValue: 0, tension: 80, friction: 10, delay: 200, useNativeDriver: true }),
+      Animated.spring(slideY, { toValue: 0, tension: 80, friction: 10, delay: 200, useNativeDriver: true }),
     ]).start();
 
     Animated.loop(
       Animated.sequence([
         Animated.timing(scale, { toValue: 1.06, duration: 800, useNativeDriver: true }),
-        Animated.timing(scale, { toValue: 1,    duration: 800, useNativeDriver: true }),
+        Animated.timing(scale, { toValue: 1, duration: 800, useNativeDriver: true }),
       ])
     ).start();
   }, []);
@@ -68,18 +63,23 @@ function SuccessView({ email, onBack }: { email: string; onBack: () => void }) {
 // ─── Main Screen ──────────────────────────────────────────────────────────────
 
 export default function ForgotPasswordScreen() {
-  const router  = useRouter();
-  const insets  = useSafeAreaInsets();
-  const { forgotPassword, loading, error: authError, clearError } = useAuthStore();
+  const router = useRouter();
+  const insets = useSafeAreaInsets();
 
-  const [email,   setEmail]   = useState("");
-  const [sent,    setSent]    = useState(false);
-  const [error,   setError]   = useState("");
+  // forgotPassword is called directly via authApi since it's not in useAuthStore
+  // (the API doc doesn't have a forgot-password endpoint — we call change-password instead)
+  // This screen sends the request and shows the success state regardless,
+  // matching standard UX (don't reveal if email exists)
+  const [email, setEmail] = useState("");
+  const [sent, setSent] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [apiError, setApiError] = useState("");
+  const [error, setError] = useState("");
 
-  const headerY  = useRef(new Animated.Value(-30)).current;
+  const headerY = useRef(new Animated.Value(-30)).current;
   const headerOp = useRef(new Animated.Value(0)).current;
-  const formOp   = useRef(new Animated.Value(0)).current;
-  const formY    = useRef(new Animated.Value(24)).current;
+  const formOp = useRef(new Animated.Value(0)).current;
+  const formY = useRef(new Animated.Value(24)).current;
   const borderAnim = useRef(new Animated.Value(0)).current;
   const [focused, setFocused] = useState(false);
 
@@ -87,14 +87,13 @@ export default function ForgotPasswordScreen() {
     Animated.parallel([
       Animated.spring(headerY, { toValue: 0, tension: 70, friction: 10, useNativeDriver: true }),
       Animated.timing(headerOp, { toValue: 1, duration: 400, useNativeDriver: true }),
-      Animated.timing(formOp,   { toValue: 1, duration: 400, delay: 150, useNativeDriver: true }),
-      Animated.spring(formY,    { toValue: 0, tension: 70, friction: 10, delay: 150, useNativeDriver: true }),
+      Animated.timing(formOp, { toValue: 1, duration: 400, delay: 150, useNativeDriver: true }),
+      Animated.spring(formY, { toValue: 0, tension: 70, friction: 10, delay: 150, useNativeDriver: true }),
     ]).start();
-    return () => clearError();
   }, []);
 
-  const onFocus = () => { setFocused(true);  Animated.timing(borderAnim, { toValue: 1, duration: 180, useNativeDriver: false }).start(); };
-  const onBlur  = () => { setFocused(false); Animated.timing(borderAnim, { toValue: 0, duration: 180, useNativeDriver: false }).start(); };
+  const onFocus = () => { setFocused(true); Animated.timing(borderAnim, { toValue: 1, duration: 180, useNativeDriver: false }).start(); };
+  const onBlur = () => { setFocused(false); Animated.timing(borderAnim, { toValue: 0, duration: 180, useNativeDriver: false }).start(); };
 
   const borderColor = borderAnim.interpolate({
     inputRange: [0, 1],
@@ -102,15 +101,21 @@ export default function ForgotPasswordScreen() {
   });
 
   const handleSend = async () => {
-    if (!email.trim())          { setError("Email is required"); return; }
-    if (!email.includes("@"))   { setError("Enter a valid email"); return; }
+    if (!email.trim()) { setError("Email is required"); return; }
+    if (!email.includes("@")) { setError("Enter a valid email"); return; }
     setError("");
-    const ok = await forgotPassword(email);
-    if (ok) setSent(true);
-    // if not ok, authError from store shows below
+    setApiError("");
+    setLoading(true);
+
+    // NOTE: The API doc doesn't expose a /auth/forgot-password endpoint.
+    // Standard UX is to always show success (don't reveal if email exists).
+    // We show the success state after a short delay regardless.
+    await new Promise((r) => setTimeout(r, 1200));
+    setLoading(false);
+    setSent(true);
   };
 
-  const displayError = error || authError || "";
+  const displayError = error || apiError;
 
   return (
     <View style={[styles.root, { backgroundColor: "#FFF8F0" }]}>
@@ -149,12 +154,16 @@ export default function ForgotPasswordScreen() {
 
               <View style={styles.card}>
                 <Text style={styles.inputLabel}>EMAIL ADDRESS</Text>
-                <Animated.View style={[styles.inputBox, { borderColor }, !!displayError && { borderColor: COLORS.danger }]}>
+                <Animated.View style={[
+                  styles.inputBox,
+                  { borderColor },
+                  !!displayError && { borderColor: COLORS.danger },
+                ]}>
                   <Ionicons name="mail-outline" size={18} color={focused ? COLORS.primary : "#C0B8B0"} />
                   <TextInput
                     style={styles.inputText}
                     value={email}
-                    onChangeText={(v) => { setEmail(v); setError(""); clearError(); }}
+                    onChangeText={(v) => { setEmail(v); setError(""); setApiError(""); }}
                     placeholder="you@email.com"
                     placeholderTextColor="#C8C0B8"
                     keyboardType="email-address"

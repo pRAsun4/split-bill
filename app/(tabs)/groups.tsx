@@ -1,9 +1,10 @@
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect } from "react";
 import {
   Animated,
+  RefreshControl,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -13,99 +14,106 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { GroupsScreenSkeleton } from "../../components/Skeleton";
 import { Avatar, FadeCard, PressScale } from "../../components/ui";
 import { COLORS, FONT, GRAD, RADIUS, SHADOW, SPACE } from "../../constants/theme";
-import { computeSettlements, getNetBalance, useAppStore } from "../../store/useAppStore";
+import { useAppContext } from "../../lib/useAppContext";
+import { useAuthStore } from "../../store/useAuthStore";
+import { getAvatarColor, getInitials, useGroupStore } from "../../store/useGroupStore";
 
 // ─── Group Card ───────────────────────────────────────────────────────────────
 
 function GroupCard({
-  group,
-  currentUserId,
-  delay,
-  onPress,
+  group, myUserId, groupBalances, delay, onPress, tc, fmt, t,
 }: {
-  group: ReturnType<typeof useAppStore.getState>["groups"][0];
-  currentUserId: string;
-  delay: number;
-  onPress: () => void;
+  group: ReturnType<typeof useGroupStore.getState>["groups"][0];
+  myUserId: string;
+  groupBalances: ReturnType<typeof useGroupStore.getState>["balances"][string];
+  delay: number; onPress: () => void;
+  tc: ReturnType<typeof useAppContext>["tc"];
+  fmt: (n: number) => string;
+  t: ReturnType<typeof useAppContext>["t"];
 }) {
-  const bal = getNetBalance(currentUserId, group.expenses);
-  const settlements = computeSettlements(group.members, group.expenses);
-  const totalSpent = group.expenses.reduce((s, e) => s + e.amount, 0);
-  const isSettled = settlements.length === 0;
-  const isOwed = bal.owed > bal.owes;
-  const net = bal.owed - bal.owes;
+  const bals      = groupBalances ?? [];
+  const totalOwed = bals.reduce((s, b) => s + b.owesYou, 0);
+  const totalOwes = bals.reduce((s, b) => s + b.youOwe,  0);
+  const net       = totalOwed - totalOwes;
+  const isSettled = bals.length === 0 || Math.abs(net) < 0.01;
+  const isOwed    = net > 0;
 
-  // Members excluding me
-  const others = group.members.filter((m) => m.id !== currentUserId);
+  const others = group.members.filter((m) => m.userId !== myUserId);
 
-  // Who owes what to me (simplified for display)
-  const myCredits = settlements.filter((s) => s.toId === currentUserId);
-  const myDebts = settlements.filter((s) => s.fromId === currentUserId);
+  // Simplify debt lines from balances
+  const credits = bals.filter((b) => b.owesYou > 0.01);
+  const debts   = bals.filter((b) => b.youOwe  > 0.01);
 
   return (
     <FadeCard delay={delay}>
       <PressScale onPress={onPress}>
-        <View style={styles.card}>
-          {/* Header row */}
+        <View style={[styles.card, { backgroundColor: tc.card }]}>
+          {/* Header */}
           <View style={styles.cardHeader}>
-            <View style={styles.cardEmojiBox}>
-              <Text style={{ fontSize: 28 }}>{group.emoji}</Text>
+            <View style={[styles.cardEmojiBox, { backgroundColor: tc.cardAlt }]}>
+              <Text style={{ fontSize: 28 }}>{group.iconEmoji ?? "👥"}</Text>
             </View>
             <View style={styles.cardHeaderText}>
-              <Text style={styles.cardName}>{group.name}</Text>
-              <Text style={styles.cardDate}>
-                {new Date(group.createdAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+              <Text style={[styles.cardName, { color: tc.textPrimary }]}>{group.name}</Text>
+              <Text style={[styles.cardDate, { color: tc.textMuted }]}>
+                {new Date(group.createdAt).toLocaleDateString("en-US", {
+                  month: "short", day: "numeric", year: "numeric",
+                })}
               </Text>
             </View>
-            <Text style={styles.cardTotal}>${totalSpent.toFixed(2)}</Text>
+            <Text style={[styles.cardMemberCount, { color: tc.textMuted }]}>
+              {group.members.length} {t.common.members}
+            </Text>
           </View>
 
           {/* Member avatars */}
           <View style={styles.memberRow}>
             {others.slice(0, 4).map((m, i) => (
               <Avatar
-                key={m.id}
-                initials={m.initials}
-                color={m.avatarColor}
+                key={m.userId}
+                initials={getInitials(m.user.name)}
+                color={getAvatarColor(m.userId)}
                 size={28}
-                style={{ marginLeft: i > 0 ? -8 : 0, borderWidth: 2, borderColor: "#fff" }}
+                style={{ marginLeft: i > 0 ? -8 : 0, borderWidth: 2, borderColor: tc.card }}
               />
             ))}
             {others.length > 4 && (
-              <View style={[styles.moreAvatar, { marginLeft: -8 }]}>
-                <Text style={styles.moreAvatarText}>+{others.length - 4}</Text>
+              <View style={[styles.moreAvatar, { marginLeft: -8, backgroundColor: tc.border }]}>
+                <Text style={[styles.moreAvatarText, { color: tc.textSecondary }]}>
+                  +{others.length - 4}
+                </Text>
               </View>
             )}
           </View>
 
-          {/* Credits / Debts */}
+          {/* Balance section */}
           {isSettled ? (
             <View style={styles.settledBadge}>
               <Ionicons name="checkmark-circle" size={14} color={COLORS.success} />
-              <Text style={styles.settledText}>Settled up</Text>
+              <Text style={styles.settledText}>{t.common.settledUp}</Text>
             </View>
           ) : (
             <View style={styles.debtSection}>
-              {myCredits.map((c) => (
-                <Text key={`${c.fromId}-${c.toId}`} style={styles.creditLine}>
-                  <Text style={{ fontWeight: FONT.bold }}>{c.fromName}</Text> owes you{" "}
-                  <Text style={{ color: COLORS.success, fontWeight: FONT.bold }}>${c.amount.toFixed(2)}</Text>
+              {credits.map((b) => (
+                <Text key={b.id} style={[styles.creditLine, { color: tc.textSecondary }]}>
+                  <Text style={{ fontWeight: FONT.bold }}>{b.otherUser.name}</Text>
+                  {" "}{t.settle.owes} {t.common.youAreOwed.toLowerCase()}{" "}
+                  <Text style={{ color: COLORS.success, fontWeight: FONT.bold }}>{fmt(b.owesYou)}</Text>
                 </Text>
               ))}
-              {myDebts.map((d) => (
-                <Text key={`${d.fromId}-${d.toId}`} style={styles.debtLine}>
-                  You owe <Text style={{ fontWeight: FONT.bold }}>{d.toName}</Text>{" "}
-                  <Text style={{ color: COLORS.danger, fontWeight: FONT.bold }}>${d.amount.toFixed(2)}</Text>
+              {debts.map((b) => (
+                <Text key={b.id} style={[styles.debtLine, { color: tc.textSecondary }]}>
+                  {t.common.youOwe}{" "}
+                  <Text style={{ fontWeight: FONT.bold }}>{b.otherUser.name}</Text>{" "}
+                  <Text style={{ color: COLORS.danger, fontWeight: FONT.bold }}>{fmt(b.youOwe)}</Text>
                 </Text>
               ))}
-
-              {/* Net badge */}
               <View style={[styles.netBadge, { backgroundColor: isOwed ? "#E8F5E9" : "#FFEBEE" }]}>
-                <Text style={[styles.netBadgeLabel, { color: COLORS.textSecondary }]}>
-                  {isOwed ? "You are owed" : "You owe"}
+                <Text style={[styles.netBadgeLabel, { color: tc.textSecondary }]}>
+                  {isOwed ? t.common.youAreOwed : t.common.youOwe}
                 </Text>
                 <Text style={[styles.netBadgeAmt, { color: isOwed ? COLORS.success : COLORS.danger }]}>
-                  ${Math.abs(net).toFixed(2)}
+                  {fmt(Math.abs(net))}
                 </Text>
               </View>
             </View>
@@ -120,46 +128,69 @@ function GroupCard({
 
 export default function GroupsScreen() {
   const router = useRouter();
-  const { groups, currentUserId } = useAppStore();
+  const { user } = useAuthStore();
+  const { tc, fmt, t } = useAppContext();
+  const { groups, balances, loadingGroups, fetchGroups, fetchBalances } = useGroupStore();
 
-  const [isLoading, setIsLoading] = useState(true);
+  useEffect(() => { fetchGroups(); }, []);
+
   useEffect(() => {
-    const t = setTimeout(() => setIsLoading(false), 1400);
-    return () => clearTimeout(t);
-  }, []);
+    for (const g of groups) {
+      if (!balances[g.id]) fetchBalances(g.id);
+    }
+  }, [groups]);
 
-  if (isLoading) return <GroupsScreenSkeleton />;
+  const onRefresh = useCallback(async () => {
+    await fetchGroups();
+    for (const g of groups) fetchBalances(g.id);
+  }, [groups]);
 
-  const sorted = [...groups].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  if (loadingGroups && groups.length === 0) return <GroupsScreenSkeleton />;
+
+  const myUserId = user?.id ?? "";
+  const sorted   = [...groups].sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+  );
 
   return (
-    <View style={{ flex: 1, backgroundColor: COLORS.bg }}>
+    <View style={[styles.root, { backgroundColor: tc.bg }]}>
       <LinearGradient colors={GRAD} style={styles.header}>
         <SafeAreaView edges={["top"]}>
           <View style={styles.headerRow}>
             <View>
-              <Text style={styles.headerTitle}>Groups</Text>
-              <Text style={styles.headerSub}>You are in {groups.length} groups.</Text>
+              <Text style={styles.headerTitle}>{t.groups.title}</Text>
+              <Text style={styles.headerSub}>{t.groups.subtitle(groups.length)}</Text>
             </View>
-            <TouchableOpacity style={styles.headerAvatar} onPress={() => router.push("/friend/me")}>
-              <Avatar initials="ME" color="rgba(255,255,255,0.25)" size={38} />
+            <TouchableOpacity onPress={() => router.push("/(tabs)/profile")}>
+              <Avatar
+                initials={getInitials(user?.name ?? "Me")}
+                color={getAvatarColor(myUserId)}
+                size={38}
+              />
             </TouchableOpacity>
           </View>
         </SafeAreaView>
       </LinearGradient>
 
       <Animated.ScrollView
-        style={styles.scroll}
+        style={[styles.scroll, { backgroundColor: tc.bg }]}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
+        refreshControl={<RefreshControl refreshing={loadingGroups} onRefresh={onRefresh} />}
       >
+        {sorted.length === 0 && (
+          <FadeCard delay={0}>
+            <Text style={[styles.emptyText, { color: tc.textMuted }]}>{t.groups.noGroups}</Text>
+          </FadeCard>
+        )}
+
         {sorted.map((g, i) => (
           <GroupCard
-            key={g.id}
-            group={g}
-            currentUserId={currentUserId}
+            key={g.id} group={g} myUserId={myUserId}
+            groupBalances={balances[g.id] ?? []}
             delay={i * 70}
             onPress={() => router.push(`/groups/${g.id}`)}
+            tc={tc} fmt={fmt} t={t}
           />
         ))}
         <View style={{ height: 100 }} />
@@ -168,235 +199,46 @@ export default function GroupsScreen() {
   );
 }
 
-// ─── Styles ───────────────────────────────────────────────────────────────────
-
 const styles = StyleSheet.create({
-  header: {
-    paddingBottom: SPACE.xl + 4,
-    paddingHorizontal: SPACE.xl,
-  },
+  root: { flex: 1 },
+  header: { paddingBottom: SPACE.xl + 4, paddingHorizontal: SPACE.xl },
   headerRow: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    justifyContent: "space-between",
-    paddingTop: SPACE.sm,
+    flexDirection: "row", alignItems: "flex-start",
+    justifyContent: "space-between", paddingTop: SPACE.sm,
   },
-  headerTitle: {
-    fontSize: FONT.display,
-    fontWeight: FONT.black,
-    color: "#fff",
-    letterSpacing: -0.8,
-  },
-  headerSub: {
-    fontSize: FONT.sm,
-    color: "rgba(255,255,255,0.7)",
-    marginTop: 3,
-    fontWeight: FONT.medium,
-  },
-  headerAvatar: {},
-  scroll: {
-    flex: 1,
-    backgroundColor: COLORS.bg,
-    borderTopLeftRadius: RADIUS.xxl + 4,
-    borderTopRightRadius: RADIUS.xxl + 4,
-    marginTop: -RADIUS.xxl,
-  },
-  scrollContent: {
-    paddingTop: SPACE.xl,
-    paddingHorizontal: SPACE.xl,
-  },
-  card: {
-    backgroundColor: COLORS.card,
-    borderRadius: RADIUS.xl,
-    padding: SPACE.lg,
-    marginBottom: SPACE.md,
-    ...SHADOW.sm,
-  },
-  cardHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: SPACE.md,
-    marginBottom: SPACE.md,
-  },
-  cardEmojiBox: {
-    width: 52,
-    height: 52,
-    borderRadius: RADIUS.md,
-    backgroundColor: "#FFF3E0",
-    alignItems: "center",
-    justifyContent: "center",
-  },
+  headerTitle: { fontSize: FONT.display, fontWeight: FONT.black, color: "#fff", letterSpacing: -0.8 },
+  headerSub: { fontSize: FONT.sm, color: "rgba(255,255,255,0.7)", marginTop: 3, fontWeight: FONT.medium },
+  scroll: { flex: 1, borderTopLeftRadius: RADIUS.xxl + 4, borderTopRightRadius: RADIUS.xxl + 4, marginTop: -RADIUS.xxl },
+  scrollContent: { paddingTop: SPACE.xl, paddingHorizontal: SPACE.xl },
+  card: { borderRadius: RADIUS.xl, padding: SPACE.lg, marginBottom: SPACE.md, ...SHADOW.sm },
+  cardHeader: { flexDirection: "row", alignItems: "center", gap: SPACE.md, marginBottom: SPACE.md },
+  cardEmojiBox: { width: 52, height: 52, borderRadius: RADIUS.md, alignItems: "center", justifyContent: "center" },
   cardHeaderText: { flex: 1 },
-  cardName: {
-    fontSize: FONT.lg,
-    fontWeight: FONT.bold,
-    color: COLORS.textPrimary,
-  },
-  cardDate: {
-    fontSize: FONT.xs,
-    color: COLORS.textMuted,
-    marginTop: 2,
-  },
-  cardTotal: {
-    fontSize: FONT.xl,
-    fontWeight: FONT.black,
-    color: COLORS.textPrimary,
-    letterSpacing: -0.5,
-  },
-  memberRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginBottom: SPACE.md,
-  },
+  cardName: { fontSize: FONT.lg, fontWeight: FONT.bold },
+  cardDate: { fontSize: FONT.xs, marginTop: 2 },
+  cardMemberCount: { fontSize: FONT.xs, fontWeight: FONT.medium },
+  memberRow: { flexDirection: "row", alignItems: "center", marginBottom: SPACE.md },
   moreAvatar: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    backgroundColor: COLORS.border,
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 2,
-    borderColor: "#fff",
+    width: 28, height: 28, borderRadius: 14,
+    alignItems: "center", justifyContent: "center",
+    borderWidth: 2, borderColor: "#fff",
   },
-  moreAvatarText: {
-    fontSize: FONT.xs,
-    fontWeight: FONT.bold,
-    color: COLORS.textSecondary,
-  },
+  moreAvatarText: { fontSize: FONT.xs, fontWeight: FONT.bold },
   settledBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: SPACE.xs,
-    backgroundColor: "#E8F5E9",
-    alignSelf: "flex-start",
-    paddingHorizontal: SPACE.md,
-    paddingVertical: SPACE.xs,
-    borderRadius: RADIUS.pill,
+    flexDirection: "row", alignItems: "center", gap: SPACE.xs,
+    backgroundColor: "#E8F5E9", alignSelf: "flex-start",
+    paddingHorizontal: SPACE.md, paddingVertical: SPACE.xs, borderRadius: RADIUS.pill,
   },
-  settledText: {
-    fontSize: FONT.sm,
-    fontWeight: FONT.semibold,
-    color: COLORS.success,
-  },
-  debtSection: {
-    gap: SPACE.xs,
-  },
-  creditLine: {
-    fontSize: FONT.sm,
-    color: COLORS.textSecondary,
-  },
-  debtLine: {
-    fontSize: FONT.sm,
-    color: COLORS.textSecondary,
-  },
+  settledText: { fontSize: FONT.sm, fontWeight: FONT.semibold, color: COLORS.success },
+  debtSection: { gap: SPACE.xs },
+  creditLine: { fontSize: FONT.sm },
+  debtLine: { fontSize: FONT.sm },
   netBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: SPACE.md,
-    paddingVertical: SPACE.sm,
-    borderRadius: RADIUS.md,
-    marginTop: SPACE.xs,
+    flexDirection: "row", alignItems: "center", justifyContent: "space-between",
+    paddingHorizontal: SPACE.md, paddingVertical: SPACE.sm,
+    borderRadius: RADIUS.md, marginTop: SPACE.xs,
   },
-  netBadgeLabel: {
-    fontSize: FONT.sm,
-    fontWeight: FONT.medium,
-  },
-  netBadgeAmt: {
-    fontSize: FONT.md,
-    fontWeight: FONT.black,
-    letterSpacing: -0.3,
-  },
+  netBadgeLabel: { fontSize: FONT.sm, fontWeight: FONT.medium },
+  netBadgeAmt: { fontSize: FONT.md, fontWeight: FONT.black, letterSpacing: -0.3 },
+  emptyText: { fontSize: FONT.base, textAlign: "center", paddingVertical: SPACE.xl },
 });
-
-
-
-// import { useRouter } from 'expo-router';
-// import React from 'react';
-// import { Image, ScrollView, Text, TouchableOpacity, View } from 'react-native';
-// import { SafeAreaView } from 'react-native-safe-area-context';
-
-// export default function GroupsScreen() {
-//   const router = useRouter();
-//   return (
-//     <SafeAreaView className="flex-1 bg-primary">
-//       <ScrollView 
-//         className="flex-1  px-6" 
-//         showsVerticalScrollIndicator={false}
-//         contentContainerStyle={{ paddingBottom: 140 }}
-//       >
-//         {/* 1. Header Section */}
-//         <View className="flex-row justify-between items-center mt-4">
-//           <View>
-//             <Text className="text-white text-3xl font-bold">Groups</Text>
-//             <Text className="text-white/70 text-sm font-medium">You are in 3 groups.</Text>
-//           </View>
-//           <Image 
-//             source={{ uri: 'https://avatar.iran.liara.run/public/65' }} 
-//             className="w-10 h-10 rounded-full border-2 border-white/30"
-//           />
-//         </View>
-
-//         {/* GROUP DETAILS WILL MAP HERE FROM DB */}
-
-//         {/* 2. Group Card - Birthday House */}
-//         <TouchableOpacity
-//           onPress={() => router.push('/group/Birthday-House')}
-//            className="bg-white/90 dark:bg-white/10 p-5 rounded-[32px] mt-8 shadow-sm border border-white/20">
-//           <View className="flex-row justify-between items-start">
-//             <View className="flex-row items-center">
-//               <View className="bg-red-100 p-2 rounded-xl">
-//                 <Text className="text-xl">🎂</Text>
-//               </View>
-//               <View className="ml-3">
-//                 <Text className="text-gray-900 dark:text-white font-bold text-lg">Birthday House</Text>
-//                 <Text className="text-gray-500 dark:text-white/50 text-xs">Mar 24, 2023</Text>
-//               </View>
-//             </View>
-//             <Text className="text-gray-900 dark:text-white font-bold text-lg">$4508.32</Text>
-//           </View>
-
-//           {/* Breakdown List */}
-//           <View className="mt-4 border-t border-gray-100 dark:border-white/5 pt-4">
-//             <View className="flex-row items-center mb-3">
-//               <Image source={{ uri: 'https://avatar.iran.liara.run/public/3' }} className="w-6 h-6 rounded-full" />
-//               <Text className="text-gray-600 dark:text-white/70 text-sm ml-2">John owes you <Text className="font-bold text-gray-900 dark:text-white">$1502.75</Text></Text>
-//             </View>
-//             <View className="flex-row items-center mb-4">
-//               <Image source={{ uri: 'https://avatar.iran.liara.run/public/4' }} className="w-6 h-6 rounded-full" />
-//               <Text className="text-gray-600 dark:text-white/70 text-sm ml-2">Wade owes you <Text className="font-bold text-gray-900 dark:text-white">$1502.75</Text></Text>
-//             </View>
-
-//             {/* Status Chip */}
-//             <View className="bg-green-100 dark:bg-green-500/20 p-3 rounded-2xl flex-row justify-between items-center">
-//               <Text className="text-green-600 dark:text-green-400 font-bold text-sm">You are owed</Text>
-//               <Text className="text-green-600 dark:text-green-400 font-bold text-base">$3005.54</Text>
-//             </View>
-//           </View>
-//         </TouchableOpacity>
-
-//         {/* 3. Group Card - Party Time (Settled) */}
-//         <TouchableOpacity 
-//           onPress={() => router.push('/group/Party-Time')}
-//           className="bg-white/90 dark:bg-white/10 p-5 rounded-[32px] mt-4 shadow-sm border border-white/20">
-//           <View className="flex-row justify-between items-center">
-//             <View className="flex-row items-center">
-//               <View className="bg-yellow-100 p-2 rounded-xl">
-//                 <Text className="text-xl">🎉</Text>
-//               </View>
-//               <View className="ml-3">
-//                 <Text className="text-gray-900 dark:text-white font-bold text-lg">Party Time</Text>
-//                 <Text className="text-gray-500 dark:text-white/50 text-xs">Mar 24, 2023</Text>
-//               </View>
-//             </View>
-//             <Text className="text-gray-900 dark:text-white font-bold text-lg">$2501.32</Text>
-//           </View>
-//           <View className="bg-gray-100 dark:bg-white/5 p-3 rounded-2xl mt-4 items-center">
-//             <Text className="text-gray-500 dark:text-white/40 font-bold text-sm">Settled up</Text>
-//           </View>
-//         </TouchableOpacity>
-
-//       </ScrollView>
-//     </SafeAreaView>
-//   );
-// }

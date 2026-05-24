@@ -1,221 +1,175 @@
 /**
  * lib/socket.ts
  * ─────────────
- * Socket.IO singleton client for real-time events.
- *
- * Usage:
- *   import { socketService } from "../lib/socket";
- *
- *   // Connect once after login (called from useAuthStore)
- *   socketService.connect(accessToken);
- *
- *   // In a group screen
- *   socketService.joinGroup(groupId);
- *   socketService.onNewMessage((msg) => { ... });
- *   socketService.offNewMessage();
- *
- *   // On logout
- *   socketService.disconnect();
- *
- * All server → client events are typed.
- * Listener helpers follow the pattern: on<EventName> / off<EventName>.
+ * Socket.IO singleton. Connects once when authenticated.
+ * Screens join/leave group rooms on navigation.
+ * Events update Zustand stores directly.
  */
 
 import { io, Socket } from "socket.io-client";
-import type {
-    ApiExpense,
-    ApiGroup,
-    ApiMessage,
-    ApiUser,
-} from "./api";
+import { useGroupStore } from "../store/useGroupStore";
 
-// ─── Config ───────────────────────────────────────────────────────────────────
+const BASE_URL = process.env.EXPO_PUBLIC_API_URL ?? "http://localhost:3001";
 
-const SOCKET_URL = process.env.EXPO_PUBLIC_API_URL ?? "http://localhost:3001";
+let socket: Socket | null = null;
 
-// ─── Server → Client Payload Types ───────────────────────────────────────────
+// ─── Connect ──────────────────────────────────────────────────────────────────
 
-export type SocketNewMessage = { message: ApiMessage; expense: ApiExpense | null };
-export type SocketMessageDeleted = { messageId: string };
-export type SocketExpenseCreated = { expenseId: string; title: string; totalAmount: number; currency: string; createdBy: Pick<ApiUser, "id" | "name"> };
-export type SocketExpenseUpdated = { expense: ApiExpense };
-export type SocketExpenseLocked = { expense: ApiExpense };
-export type SocketExpenseUnlocked = { expense: ApiExpense };
-export type SocketExpenseDeleted = { expenseId: string };
-export type SocketParticipantUpdated = { expenseId: string; userId: string; status: string };
-export type SocketSettlementRecorded = { settlement: object; fullySettled: boolean };
-export type SocketSettlementDeleted = { settlementId: string; groupId: string };
-export type SocketBalancesUpdated = { groupId: string };
-export type SocketGroupUpdated = { group: ApiGroup };
-export type SocketGroupDeleted = { groupId: string };
-export type SocketMembersAdded = { addedUsers: ApiUser[]; groupId: string };
-export type SocketMemberRemoved = { userId: string; groupId: string };
-export type SocketMemberLeft = { userId: string; groupId: string };
-export type SocketMemberRoleUpdated = { userId: string; role: string; groupId: string };
-export type SocketUserTyping = { userId: string; groupId: string; isTyping: boolean };
-export type SocketUserOnline = { userId: string; groupId: string };
-export type SocketUserOffline = { userId: string; groupId: string };
+export function connectSocket(accessToken: string) {
+  if (socket?.connected) return;
 
-// ─── Socket Service ───────────────────────────────────────────────────────────
+  socket = io(BASE_URL, {
+    auth: { token: accessToken },
+    transports: ["websocket"],
+    reconnection: true,
+    reconnectionAttempts: 5,
+    reconnectionDelay: 2000,
+  });
 
-class SocketService {
-    private socket: Socket | null = null;
-    private typingTimers: Record<string, ReturnType<typeof setTimeout>> = {};
+  socket.on("connect", () => {
+    console.log("[socket] connected:", socket?.id);
+  });
 
-    // ── Lifecycle ───────────────────────────────────────────────────────────────
+  socket.on("disconnect", (reason) => {
+    console.log("[socket] disconnected:", reason);
+  });
 
-    connect(accessToken: string): void {
-        if (this.socket?.connected) return;
+  socket.on("connect_error", (err) => {
+    console.warn("[socket] connect error:", err.message);
+  });
 
-        this.socket = io(SOCKET_URL, {
-            auth: { token: accessToken },
-            transports: ["websocket"],       // skip long-polling for mobile
-            reconnection: true,
-            reconnectionAttempts: 5,
-            reconnectionDelay: 1500,
-            timeout: 10_000,
-        });
+  // ── Server → Client events ──────────────────────────────────────────────────
 
-        this.socket.on("connect", () => {
-            console.log("[Socket] Connected:", this.socket?.id);
-        });
-
-        this.socket.on("connect_error", (err) => {
-            console.warn("[Socket] Connect error:", err.message);
-        });
-
-        this.socket.on("disconnect", (reason) => {
-            console.log("[Socket] Disconnected:", reason);
-        });
+  socket.on("new_message", ({ message, expense }) => {
+    if (!message?.groupId) return;
+    useGroupStore.getState().prependMessage(message.groupId, message);
+    if (expense) {
+      useGroupStore.getState().addExpenseToCache(message.groupId, expense);
     }
+  });
 
-    disconnect(): void {
-        if (this.socket) {
-            this.socket.disconnect();
-            this.socket = null;
-        }
+  socket.on("message_deleted", ({ messageId }) => {
+    // No direct cache for individual messages — refetch on next load
+    console.log("[socket] message_deleted:", messageId);
+  });
+
+  socket.on("expense_created", ({ expenseId, groupId }) => {
+    // Refetch expenses for the group to get full expense with participants
+    if (groupId) useGroupStore.getState().fetchExpenses(groupId);
+  });
+
+  socket.on("expense_updated", ({ expense }) => {
+    if (expense?.groupId) {
+      useGroupStore.getState().updateExpenseInCache(expense.groupId, expense);
     }
+  });
 
-    get isConnected(): boolean {
-        return this.socket?.connected ?? false;
+  socket.on("expense_locked", ({ expense }) => {
+    if (expense?.groupId) {
+      useGroupStore.getState().updateExpenseInCache(expense.groupId, expense);
     }
+  });
 
-    // ── Group Room Management ───────────────────────────────────────────────────
-
-    joinGroup(groupId: string): void {
-        this.socket?.emit("join_group", groupId);
+  socket.on("expense_unlocked", ({ expense }) => {
+    if (expense?.groupId) {
+      useGroupStore.getState().updateExpenseInCache(expense.groupId, expense);
     }
+  });
 
-    leaveGroup(groupId: string): void {
-        this.socket?.emit("leave_group", groupId);
+  socket.on("expense_deleted", ({ expenseId, groupId }) => {
+    if (groupId && expenseId) {
+      useGroupStore.getState().removeExpenseFromCache(groupId, expenseId);
     }
+  });
 
-    // ── Typing Indicators ───────────────────────────────────────────────────────
+  socket.on("participant_updated", ({ expenseId, groupId }) => {
+    if (groupId) useGroupStore.getState().fetchExpenses(groupId);
+  });
 
-    startTyping(groupId: string): void {
-        this.socket?.emit("typing_start", groupId);
+  socket.on("balances_updated", ({ groupId }) => {
+    if (groupId) {
+      useGroupStore.getState().fetchBalances(groupId);
+      useGroupStore.getState().fetchSummary(groupId);
     }
+  });
 
-    stopTyping(groupId: string): void {
-        this.socket?.emit("typing_stop", groupId);
+  socket.on("settlement_recorded", ({ groupId }) => {
+    if (groupId) {
+      useGroupStore.getState().fetchBalances(groupId);
+      useGroupStore.getState().fetchSummary(groupId);
     }
+  });
 
-    /**
-     * Debounced typing — call on every keystroke.
-     * Emits typing_start immediately, typing_stop after 1.5s of silence.
-     */
-    debounceTyping(groupId: string): void {
-        if (!this.typingTimers[groupId]) {
-            this.startTyping(groupId);
-        }
-        clearTimeout(this.typingTimers[groupId]);
-        this.typingTimers[groupId] = setTimeout(() => {
-            this.stopTyping(groupId);
-            delete this.typingTimers[groupId];
-        }, 1500);
+  socket.on("settlement_deleted", ({ groupId }) => {
+    if (groupId) {
+      useGroupStore.getState().fetchBalances(groupId);
+      useGroupStore.getState().fetchSummary(groupId);
     }
+  });
 
-    // ── Generic listener helpers ────────────────────────────────────────────────
+  socket.on("group_updated", ({ group }) => {
+    if (!group?.id) return;
+    useGroupStore.setState((s) => ({
+      groups: s.groups.map((g) => (g.id === group.id ? { ...g, ...group } : g)),
+    }));
+  });
 
-    private on<T>(event: string, cb: (data: T) => void): void {
-        this.socket?.on(event, cb);
-    }
+  socket.on("group_deleted", ({ groupId }) => {
+    if (!groupId) return;
+    useGroupStore.setState((s) => ({
+      groups: s.groups.filter((g) => g.id !== groupId),
+    }));
+  });
 
-    private off(event: string): void {
-        this.socket?.off(event);
-    }
+  socket.on("members_added", ({ groupId }) => {
+    // Refetch group to get updated member list
+    if (groupId) useGroupStore.getState().fetchGroups();
+  });
 
-    // ── Server → Client: Messages ───────────────────────────────────────────────
+  socket.on("member_removed", ({ groupId }) => {
+    if (groupId) useGroupStore.getState().fetchGroups();
+  });
 
-    onNewMessage(cb: (data: SocketNewMessage) => void) { this.on("new_message", cb); }
-    offNewMessage() { this.off("new_message"); }
+  socket.on("member_left", ({ groupId }) => {
+    if (groupId) useGroupStore.getState().fetchGroups();
+  });
 
-    onMessageDeleted(cb: (data: SocketMessageDeleted) => void) { this.on("message_deleted", cb); }
-    offMessageDeleted() { this.off("message_deleted"); }
-
-    // ── Server → Client: Expenses ───────────────────────────────────────────────
-
-    onExpenseCreated(cb: (data: SocketExpenseCreated) => void) { this.on("expense_created", cb); }
-    offExpenseCreated() { this.off("expense_created"); }
-
-    onExpenseUpdated(cb: (data: SocketExpenseUpdated) => void) { this.on("expense_updated", cb); }
-    offExpenseUpdated() { this.off("expense_updated"); }
-
-    onExpenseLocked(cb: (data: SocketExpenseLocked) => void) { this.on("expense_locked", cb); }
-    offExpenseLocked() { this.off("expense_locked"); }
-
-    onExpenseUnlocked(cb: (data: SocketExpenseUnlocked) => void) { this.on("expense_unlocked", cb); }
-    offExpenseUnlocked() { this.off("expense_unlocked"); }
-
-    onExpenseDeleted(cb: (data: SocketExpenseDeleted) => void) { this.on("expense_deleted", cb); }
-    offExpenseDeleted() { this.off("expense_deleted"); }
-
-    onParticipantUpdated(cb: (data: SocketParticipantUpdated) => void) { this.on("participant_updated", cb); }
-    offParticipantUpdated() { this.off("participant_updated"); }
-
-    // ── Server → Client: Balances & Settlements ─────────────────────────────────
-
-    onBalancesUpdated(cb: (data: SocketBalancesUpdated) => void) { this.on("balances_updated", cb); }
-    offBalancesUpdated() { this.off("balances_updated"); }
-
-    onSettlementRecorded(cb: (data: SocketSettlementRecorded) => void) { this.on("settlement_recorded", cb); }
-    offSettlementRecorded() { this.off("settlement_recorded"); }
-
-    onSettlementDeleted(cb: (data: SocketSettlementDeleted) => void) { this.on("settlement_deleted", cb); }
-    offSettlementDeleted() { this.off("settlement_deleted"); }
-
-    // ── Server → Client: Group & Members ───────────────────────────────────────
-
-    onGroupUpdated(cb: (data: SocketGroupUpdated) => void) { this.on("group_updated", cb); }
-    offGroupUpdated() { this.off("group_updated"); }
-
-    onGroupDeleted(cb: (data: SocketGroupDeleted) => void) { this.on("group_deleted", cb); }
-    offGroupDeleted() { this.off("group_deleted"); }
-
-    onMembersAdded(cb: (data: SocketMembersAdded) => void) { this.on("members_added", cb); }
-    offMembersAdded() { this.off("members_added"); }
-
-    onMemberRemoved(cb: (data: SocketMemberRemoved) => void) { this.on("member_removed", cb); }
-    offMemberRemoved() { this.off("member_removed"); }
-
-    onMemberLeft(cb: (data: SocketMemberLeft) => void) { this.on("member_left", cb); }
-    offMemberLeft() { this.off("member_left"); }
-
-    onMemberRoleUpdated(cb: (data: SocketMemberRoleUpdated) => void) { this.on("member_role_updated", cb); }
-    offMemberRoleUpdated() { this.off("member_role_updated"); }
-
-    // ── Server → Client: Presence & Typing ─────────────────────────────────────
-
-    onUserTyping(cb: (data: SocketUserTyping) => void) { this.on("user_typing", cb); }
-    offUserTyping() { this.off("user_typing"); }
-
-    onUserOnline(cb: (data: SocketUserOnline) => void) { this.on("user_online", cb); }
-    offUserOnline() { this.off("user_online"); }
-
-    onUserOffline(cb: (data: SocketUserOffline) => void) { this.on("user_offline", cb); }
-    offUserOffline() { this.off("user_offline"); }
+  socket.on("member_role_updated", ({ groupId }) => {
+    if (groupId) useGroupStore.getState().fetchGroups();
+  });
 }
 
-// ─── Singleton export ─────────────────────────────────────────────────────────
+// ─── Disconnect ───────────────────────────────────────────────────────────────
 
-export const socketService = new SocketService();
+export function disconnectSocket() {
+  if (socket) {
+    socket.disconnect();
+    socket = null;
+  }
+}
+
+// ─── Group room helpers ───────────────────────────────────────────────────────
+
+export function joinGroup(groupId: string) {
+  socket?.emit("join_group", groupId);
+}
+
+export function leaveGroup(groupId: string) {
+  socket?.emit("leave_group", groupId);
+}
+
+// ─── Typing indicators ────────────────────────────────────────────────────────
+
+export function startTyping(groupId: string) {
+  socket?.emit("typing_start", groupId);
+}
+
+export function stopTyping(groupId: string) {
+  socket?.emit("typing_stop", groupId);
+}
+
+// ─── Get socket instance (for listening to custom events in screens) ──────────
+
+export function getSocket(): Socket | null {
+  return socket;
+}

@@ -3,12 +3,8 @@ import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
 import React, { useEffect, useRef, useState } from "react";
 import {
-    Animated, KeyboardAvoidingView, Platform, ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
+  Animated, KeyboardAvoidingView, Platform, ScrollView,
+  StyleSheet, Text, TextInput, TouchableOpacity, View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { AuthLoader, Loader } from "../../components/Loader";
@@ -27,20 +23,20 @@ function AuthInput({
   autoCapitalize?: any; error?: string; delay: number;
 }) {
   const [focused, setFocused] = useState(false);
-  const [showPw,  setShowPw]  = useState(false);
-  const borderAnim  = useRef(new Animated.Value(0)).current;
-  const slideAnim   = useRef(new Animated.Value(20)).current;
+  const [showPw, setShowPw] = useState(false);
+  const borderAnim = useRef(new Animated.Value(0)).current;
+  const slideAnim = useRef(new Animated.Value(20)).current;
   const opacityAnim = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
     Animated.parallel([
-      Animated.timing(slideAnim,   { toValue: 0, duration: 380, delay, useNativeDriver: true }),
+      Animated.timing(slideAnim, { toValue: 0, duration: 380, delay, useNativeDriver: true }),
       Animated.timing(opacityAnim, { toValue: 1, duration: 380, delay, useNativeDriver: true }),
     ]).start();
   }, []);
 
-  const onFocus = () => { setFocused(true);  Animated.timing(borderAnim, { toValue: 1, duration: 180, useNativeDriver: false }).start(); };
-  const onBlur  = () => { setFocused(false); Animated.timing(borderAnim, { toValue: 0, duration: 180, useNativeDriver: false }).start(); };
+  const onFocus = () => { setFocused(true); Animated.timing(borderAnim, { toValue: 1, duration: 180, useNativeDriver: false }).start(); };
+  const onBlur = () => { setFocused(false); Animated.timing(borderAnim, { toValue: 0, duration: 180, useNativeDriver: false }).start(); };
 
   const borderColor = borderAnim.interpolate({
     inputRange: [0, 1],
@@ -84,20 +80,21 @@ function AuthInput({
 // ─── Main Screen ──────────────────────────────────────────────────────────────
 
 export default function LoginScreen() {
-  const router  = useRouter();
-  const insets  = useSafeAreaInsets();
+  const router = useRouter();
+  const insets = useSafeAreaInsets();
   const { login, loading, error: authError, clearError } = useAuthStore();
 
-  const [email,    setEmail]    = useState("");
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [errors,   setErrors]   = useState<{ email?: string; password?: string }>({});
+  // Local field errors (client-side) + merged with API field errors
+  const [errors, setErrors] = useState<{ email?: string; password?: string }>({});
 
-  const headerY  = useRef(new Animated.Value(-30)).current;
+  const headerY = useRef(new Animated.Value(-30)).current;
   const headerOp = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
     Animated.parallel([
-      Animated.spring(headerY,  { toValue: 0, tension: 70, friction: 10, useNativeDriver: true }),
+      Animated.spring(headerY, { toValue: 0, tension: 70, friction: 10, useNativeDriver: true }),
       Animated.timing(headerOp, { toValue: 1, duration: 400, useNativeDriver: true }),
     ]).start();
     return () => clearError();
@@ -105,9 +102,9 @@ export default function LoginScreen() {
 
   const validate = () => {
     const e: typeof errors = {};
-    if (!email.trim())           e.email    = "Email is required";
-    else if (!email.includes("@")) e.email  = "Enter a valid email";
-    if (!password)               e.password = "Password is required";
+    if (!email.trim()) e.email = "Email is required";
+    else if (!email.includes("@")) e.email = "Enter a valid email";
+    if (!password) e.password = "Password is required";
     else if (password.length < 6) e.password = "At least 6 characters";
     setErrors(e);
     return Object.keys(e).length === 0;
@@ -115,20 +112,19 @@ export default function LoginScreen() {
 
   const handleLogin = async () => {
     if (!validate()) return;
-    // login() in the store calls the API, saves token, updates status
-    // AuthGate in _layout.tsx will auto-redirect to /(tabs) on success
-    await login(email, password);
-  };
-
-  const handleGoogle = () => {
-    // TODO: integrate Google OAuth
-    // For now navigates directly — replace with actual Google auth flow
-    router.replace("/(tabs)");
+    const ok = await login(email, password);
+    // If the API returns field-level errors, surface them
+    if (!ok) {
+      const store = useAuthStore.getState();
+      // authError is the general message — shown in the banner
+      // fieldErrors are per-field — map them to local state
+      // (login() stores them on the store if needed; we use authError banner for now)
+    }
+    // On success AuthGate in _layout.tsx auto-redirects to /(tabs)
   };
 
   return (
     <View style={styles.root}>
-      {/* Auth overlay — shown while API call is in progress */}
       <AuthLoader visible={loading} message="Signing you in..." />
 
       <LinearGradient colors={GRAD} style={[styles.topBand, { paddingTop: insets.top }]}>
@@ -158,7 +154,7 @@ export default function LoginScreen() {
           </Animated.View>
 
           <View style={styles.card}>
-            {/* Backend error banner */}
+            {/* API error banner */}
             {authError ? (
               <View style={styles.apiBanner}>
                 <Ionicons name="alert-circle" size={16} color={COLORS.danger} />
@@ -189,7 +185,6 @@ export default function LoginScreen() {
               <Text style={styles.forgotText}>Forgot password?</Text>
             </TouchableOpacity>
 
-            {/* Sign In */}
             <TouchableOpacity
               onPress={handleLogin}
               disabled={loading}
@@ -210,7 +205,8 @@ export default function LoginScreen() {
               <View style={styles.dividerLine} />
             </View>
 
-            <TouchableOpacity onPress={handleGoogle} style={styles.googleBtn} activeOpacity={0.85}>
+            {/* Google — placeholder until OAuth is implemented */}
+            <TouchableOpacity style={styles.googleBtn} activeOpacity={0.85}>
               <View style={styles.googleIconWrap}>
                 <Text style={styles.googleG}>G</Text>
               </View>

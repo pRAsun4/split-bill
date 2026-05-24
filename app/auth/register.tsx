@@ -3,12 +3,8 @@ import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
 import React, { useEffect, useRef, useState } from "react";
 import {
-    Animated, KeyboardAvoidingView, Platform, ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
+  Animated, KeyboardAvoidingView, Platform, ScrollView,
+  StyleSheet, Text, TextInput, TouchableOpacity, View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { AuthLoader, Loader } from "../../components/Loader";
@@ -19,22 +15,22 @@ import { useAuthStore } from "../../store/useAuthStore";
 
 function PasswordStrength({ password }: { password: string }) {
   if (!password) return null;
-  const hasLen    = password.length >= 8;
-  const hasUpper  = /[A-Z]/.test(password);
+  const hasLen = password.length >= 8;
+  const hasUpper = /[A-Z]/.test(password);
   const hasNumber = /[0-9]/.test(password);
   const hasSymbol = /[^A-Za-z0-9]/.test(password);
-  const score     = [hasLen, hasUpper, hasNumber, hasSymbol].filter(Boolean).length;
-  const colors    = ["#FF4444", "#FF9F43", "#FFD166", "#4CAF50"];
-  const labels    = ["Weak", "Fair", "Good", "Strong"];
+  const score = [hasLen, hasUpper, hasNumber, hasSymbol].filter(Boolean).length;
+  const colors = ["#FF4444", "#FF9F43", "#FFD166", "#4CAF50"];
+  const labels = ["Weak", "Fair", "Good", "Strong"];
   return (
     <View style={{ flexDirection: "row", alignItems: "center", gap: SPACE.sm, marginTop: 4 }}>
       <View style={{ flexDirection: "row", gap: 4, flex: 1 }}>
-        {[0,1,2,3].map((i) => (
-          <View key={i} style={{ flex: 1, height: 4, borderRadius: 2, backgroundColor: i < score ? colors[score-1] : "#EEE8E0" }} />
+        {[0, 1, 2, 3].map((i) => (
+          <View key={i} style={{ flex: 1, height: 4, borderRadius: 2, backgroundColor: i < score ? colors[score - 1] : "#EEE8E0" }} />
         ))}
       </View>
-      <Text style={{ fontSize: FONT.xs, fontWeight: FONT.bold, color: colors[score-1] ?? "#C0B8B0", width: 46, textAlign: "right" }}>
-        {labels[score-1] ?? "Weak"}
+      <Text style={{ fontSize: FONT.xs, fontWeight: FONT.bold, color: colors[score - 1] ?? "#C0B8B0", width: 46, textAlign: "right" }}>
+        {labels[score - 1] ?? "Weak"}
       </Text>
     </View>
   );
@@ -52,20 +48,20 @@ function AuthInput({
   autoCapitalize?: any; error?: string; delay: number;
 }) {
   const [focused, setFocused] = useState(false);
-  const [showPw, setShowPw]   = useState(false);
-  const borderAnim  = useRef(new Animated.Value(0)).current;
-  const slideAnim   = useRef(new Animated.Value(20)).current;
+  const [showPw, setShowPw] = useState(false);
+  const borderAnim = useRef(new Animated.Value(0)).current;
+  const slideAnim = useRef(new Animated.Value(20)).current;
   const opacityAnim = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
     Animated.parallel([
-      Animated.timing(slideAnim,   { toValue: 0, duration: 380, delay, useNativeDriver: true }),
+      Animated.timing(slideAnim, { toValue: 0, duration: 380, delay, useNativeDriver: true }),
       Animated.timing(opacityAnim, { toValue: 1, duration: 380, delay, useNativeDriver: true }),
     ]).start();
   }, []);
 
-  const onFocus = () => { setFocused(true);  Animated.timing(borderAnim, { toValue: 1, duration: 180, useNativeDriver: false }).start(); };
-  const onBlur  = () => { setFocused(false); Animated.timing(borderAnim, { toValue: 0, duration: 180, useNativeDriver: false }).start(); };
+  const onFocus = () => { setFocused(true); Animated.timing(borderAnim, { toValue: 1, duration: 180, useNativeDriver: false }).start(); };
+  const onBlur = () => { setFocused(false); Animated.timing(borderAnim, { toValue: 0, duration: 180, useNativeDriver: false }).start(); };
 
   const borderColor = borderAnim.interpolate({
     inputRange: [0, 1],
@@ -109,37 +105,38 @@ function AuthInput({
 // ─── Main Screen ──────────────────────────────────────────────────────────────
 
 export default function RegisterScreen() {
-  const router  = useRouter();
-  const insets  = useSafeAreaInsets();
+  const router = useRouter();
+  const insets = useSafeAreaInsets();
   const { register, loading, error: authError, clearError } = useAuthStore();
 
-  const [name,     setName]     = useState("");
-  const [email,    setEmail]    = useState("");
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [confirm,  setConfirm]  = useState("");
-  const [errors,   setErrors]   = useState<Record<string, string>>({});
+  const [confirm, setConfirm] = useState("");
+  const [errors, setErrors] = useState<Record<string, string>>({});
 
-  const headerY  = useRef(new Animated.Value(-30)).current;
+  const headerY = useRef(new Animated.Value(-30)).current;
   const headerOp = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
     Animated.parallel([
-      Animated.spring(headerY,  { toValue: 0, tension: 70, friction: 10, useNativeDriver: true }),
+      Animated.spring(headerY, { toValue: 0, tension: 70, friction: 10, useNativeDriver: true }),
       Animated.timing(headerOp, { toValue: 1, duration: 400, useNativeDriver: true }),
     ]).start();
     return () => clearError();
   }, []);
 
-  const clearField = (key: string) => setErrors((e) => { const n = { ...e }; delete n[key]; return n; });
+  const clearField = (key: string) =>
+    setErrors((e) => { const n = { ...e }; delete n[key]; return n; });
 
   const validate = () => {
     const e: Record<string, string> = {};
-    if (!name.trim())             e.name     = "Full name is required";
-    if (!email.trim())            e.email    = "Email is required";
-    else if (!email.includes("@")) e.email   = "Enter a valid email";
-    if (!password)                e.password = "Password is required";
+    if (!name.trim()) e.name = "Full name is required";
+    if (!email.trim()) e.email = "Email is required";
+    else if (!email.includes("@")) e.email = "Enter a valid email";
+    if (!password) e.password = "Password is required";
     else if (password.length < 6) e.password = "At least 6 characters";
-    if (!confirm)                 e.confirm  = "Please confirm your password";
+    if (!confirm) e.confirm = "Please confirm your password";
     else if (confirm !== password) e.confirm = "Passwords don't match";
     setErrors(e);
     return Object.keys(e).length === 0;
@@ -147,13 +144,9 @@ export default function RegisterScreen() {
 
   const handleRegister = async () => {
     if (!validate()) return;
-    // AuthGate auto-redirects to /(tabs) on success
-    await register(name, email, password);
-  };
-
-  const handleGoogle = () => {
-    // TODO: integrate Google OAuth
-    router.replace("/(tabs)");
+    const ok = await register(name, email, password);
+    // On success AuthGate auto-redirects to /(tabs)
+    // On failure, authError banner shows the message from the API
   };
 
   return (
@@ -187,6 +180,7 @@ export default function RegisterScreen() {
           </Animated.View>
 
           <View style={styles.card}>
+            {/* API error banner — shown for general errors like "email already exists" */}
             {authError ? (
               <View style={styles.apiBanner}>
                 <Ionicons name="alert-circle" size={16} color={COLORS.danger} />
@@ -194,13 +188,45 @@ export default function RegisterScreen() {
               </View>
             ) : null}
 
-            <AuthInput label="Full Name"     icon="person-outline"           value={name}     onChangeText={(v) => { setName(v);     clearField("name");     clearError(); }} placeholder="Alex Johnson"       autoCapitalize="words"    error={errors.name}     delay={60} />
-            <AuthInput label="Email address" icon="mail-outline"             value={email}    onChangeText={(v) => { setEmail(v);    clearField("email");    clearError(); }} placeholder="you@email.com"      keyboardType="email-address" error={errors.email}    delay={120} />
+            <AuthInput
+              label="Full Name" icon="person-outline"
+              value={name}
+              onChangeText={(v) => { setName(v); clearField("name"); clearError(); }}
+              placeholder="Alex Johnson"
+              autoCapitalize="words"
+              error={errors.name}
+              delay={60}
+            />
+            <AuthInput
+              label="Email address" icon="mail-outline"
+              value={email}
+              onChangeText={(v) => { setEmail(v); clearField("email"); clearError(); }}
+              placeholder="you@email.com"
+              keyboardType="email-address"
+              error={errors.email}
+              delay={120}
+            />
             <View style={{ gap: 2 }}>
-              <AuthInput label="Password"    icon="lock-closed-outline"      value={password} onChangeText={(v) => { setPassword(v); clearField("password"); clearError(); }} placeholder="Min. 6 characters"  secureTextEntry           error={errors.password} delay={180} />
+              <AuthInput
+                label="Password" icon="lock-closed-outline"
+                value={password}
+                onChangeText={(v) => { setPassword(v); clearField("password"); clearError(); }}
+                placeholder="Min. 6 characters"
+                secureTextEntry
+                error={errors.password}
+                delay={180}
+              />
               <PasswordStrength password={password} />
             </View>
-            <AuthInput label="Confirm Password" icon="shield-checkmark-outline" value={confirm}  onChangeText={(v) => { setConfirm(v);  clearField("confirm");  clearError(); }} placeholder="Repeat password"    secureTextEntry           error={errors.confirm}  delay={240} />
+            <AuthInput
+              label="Confirm Password" icon="shield-checkmark-outline"
+              value={confirm}
+              onChangeText={(v) => { setConfirm(v); clearField("confirm"); clearError(); }}
+              placeholder="Repeat password"
+              secureTextEntry
+              error={errors.confirm}
+              delay={240}
+            />
 
             <TouchableOpacity
               onPress={handleRegister}
@@ -222,7 +248,8 @@ export default function RegisterScreen() {
               <View style={styles.dividerLine} />
             </View>
 
-            <TouchableOpacity onPress={handleGoogle} style={styles.googleBtn} activeOpacity={0.85}>
+            {/* Google — placeholder until OAuth is implemented */}
+            <TouchableOpacity style={styles.googleBtn} activeOpacity={0.85}>
               <View style={styles.googleIconWrap}>
                 <Text style={styles.googleG}>G</Text>
               </View>
