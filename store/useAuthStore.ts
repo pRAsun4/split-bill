@@ -15,6 +15,7 @@ type AuthState = {
   user: ApiUser | null;
   error: string | null;
   loading: boolean;
+  isLoggingOut: boolean;
 
   bootstrap: () => Promise<void>;
   login: (email: string, password: string) => Promise<boolean>;
@@ -53,6 +54,7 @@ export const useAuthStore = create<AuthState>((set, get) => {
     user: null,
     error: null,
     loading: false,
+    isLoggingOut: false,
 
     // ── bootstrap ─────────────────────────────────────────────────────────────
 
@@ -141,14 +143,25 @@ export const useAuthStore = create<AuthState>((set, get) => {
 
     logout: async () => {
       const { token } = get();
-      set({ loading: true });
-      // Call backend to revoke refresh token
-      if (token) await authApi.logout(token);
-      await AsyncStorage.removeItem(TOKEN_KEY);
-      // Reset group store too
-      const { useGroupStore } = await import("./useGroupStore");
-      useGroupStore.getState().reset();
-      set({ status: "unauthenticated", token: null, user: null, error: null, loading: false });
+
+      set({ isLoggingOut: true });
+
+      // Set unauthenticated FIRST — AuthGate redirects immediately
+      // Don't wait for API or AsyncStorage before redirecting
+      set({
+        status: "unauthenticated",
+        token: null,
+        user: null,
+        error: null,
+        loading: false,
+        isLoggingOut: false,
+      });
+
+      // Clean up in background — non-blocking
+      AsyncStorage.removeItem(TOKEN_KEY).catch(() => { });
+      if (token) {
+        authApi.logout(token).catch(() => { });
+      }
     },
 
     clearError: () => set({ error: null }),

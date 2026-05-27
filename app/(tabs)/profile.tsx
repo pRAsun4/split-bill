@@ -105,7 +105,7 @@ function Section({ title, children, delay, themeColors }: {
 
 export default function ProfileScreen() {
   const router = useRouter();
-  const { user, logout, loading: loggingOut } = useAuthStore();
+  const { user, logout, isLoggingOut } = useAuthStore();
   const { theme, language, currency } = usePrefsStore();
   const { tc, fmt, t } = useAppContext();
   const themeColors = useThemeColors();
@@ -141,14 +141,21 @@ export default function ProfileScreen() {
   const myEmail    = user?.email ?? "";
 
   const handleSignOut = () => {
-    Alert.alert(t.profile.signOutConfirm, t.profile.signOutMsg, [
-      { text: t.common.cancel, style: "cancel" },
-      {
-        text: t.profile.signOut,
-        style: "destructive",
-        onPress: async () => { await logout(); },
-      },
-    ]);
+    Alert.alert(
+      "Sign Out",
+      "Are you sure you want to sign out?",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Sign Out",
+          style: "destructive",
+          onPress: () => {
+            // Don't await — let AuthGate handle the redirect
+            logout();
+          },
+        },
+      ]
+    );
   };
 
   // Map language code to display name
@@ -156,7 +163,7 @@ export default function ProfileScreen() {
 
   return (
     <View style={[styles.root, { backgroundColor: themeColors.bg }]}>
-      <AuthLoader visible={loggingOut} message="Signing out..." />
+      <AuthLoader visible={isLoggingOut} message="Signing out..." />
 
       <LinearGradient colors={GRAD} style={styles.header}>
         <SafeAreaView edges={["top"]}>

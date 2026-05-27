@@ -12,13 +12,13 @@ import { useGroupStore } from "../store/useGroupStore";
 import { usePrefsStore } from "../store/usePrefsStore";
 
 // Safe socket helpers — no-op if socket.io-client not installed yet
-let connectSocket = (_token: string) => { };
-let disconnectSocket = () => { };
+let connectSocket    = (_token: string) => {};
+let disconnectSocket = () => {};
 try {
   const socket = require("../lib/socket");
-  connectSocket = socket.connectSocket;
+  connectSocket    = socket.connectSocket;
   disconnectSocket = socket.disconnectSocket;
-} catch { }
+} catch {}
 
 // ─── Themed Status Bar ────────────────────────────────────────────────────────
 
@@ -31,7 +31,7 @@ function ThemedStatusBar() {
 
 function AuthGate({ children }: { children: React.ReactNode }) {
   const { status, token, bootstrap } = useAuthStore();
-  const router = useRouter();
+  const router   = useRouter();
   const segments = useSegments();
 
   // Run once on mount — reads token from AsyncStorage, validates with /auth/me
@@ -52,7 +52,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
       useGroupStore.getState().reset();
       useFriendStore.getState().reset();
     }
-  }, [status, token]);
+  }, [status]);
 
   // Redirect based on auth status
   useEffect(() => {
@@ -88,7 +88,7 @@ export default function RootLayout() {
         <ThemedStatusBar />
         <AuthGate>
           <Stack screenOptions={{ headerShown: false, animation: "slide_from_right" }}>
-            <Stack.Screen name="auth" options={{ animation: "fade" }} />
+            <Stack.Screen name="auth"    options={{ animation: "fade" }} />
             <Stack.Screen name="(tabs)" />
             <Stack.Screen name="groups" />
             <Stack.Screen name="friend" />
