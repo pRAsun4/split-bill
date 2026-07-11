@@ -31,18 +31,18 @@ function GroupCard({
   fmt: (n: number) => string;
   t: ReturnType<typeof useAppContext>["t"];
 }) {
-  const bals      = groupBalances ?? [];
+  const bals = groupBalances ?? [];
   const totalOwed = bals.reduce((s, b) => s + b.owesYou, 0);
-  const totalOwes = bals.reduce((s, b) => s + b.youOwe,  0);
-  const net       = totalOwed - totalOwes;
+  const totalOwes = bals.reduce((s, b) => s + b.youOwe, 0);
+  const net = totalOwed - totalOwes;
   const isSettled = bals.length === 0 || Math.abs(net) < 0.01;
-  const isOwed    = net > 0;
+  const isOwed = net > 0;
 
   const others = group.members.filter((m) => m.userId !== myUserId);
 
   // Simplify debt lines from balances
   const credits = bals.filter((b) => b.owesYou > 0.01);
-  const debts   = bals.filter((b) => b.youOwe  > 0.01);
+  const debts = bals.filter((b) => b.youOwe > 0.01);
 
   return (
     <FadeCard delay={delay}>
@@ -148,7 +148,7 @@ export default function GroupsScreen() {
   if (loadingGroups && groups.length === 0) return <GroupsScreenSkeleton />;
 
   const myUserId = user?.id ?? "";
-  const sorted   = [...groups].sort(
+  const sorted = [...groups].sort(
     (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
   );
 
@@ -161,12 +161,13 @@ export default function GroupsScreen() {
               <Text style={styles.headerTitle}>{t.groups.title}</Text>
               <Text style={styles.headerSub}>{t.groups.subtitle(groups.length)}</Text>
             </View>
-            <TouchableOpacity onPress={() => router.push("/(tabs)/profile")}>
-              <Avatar
-                initials={getInitials(user?.name ?? "Me")}
-                color={getAvatarColor(myUserId)}
-                size={38}
-              />
+            {/* + button → create new group */}
+            <TouchableOpacity
+              style={styles.addGroupBtn}
+              onPress={() => router.push("/groups/create")}
+              activeOpacity={0.85}
+            >
+              <Ionicons name="add" size={24} color="#fff" />
             </TouchableOpacity>
           </View>
         </SafeAreaView>
@@ -208,6 +209,12 @@ const styles = StyleSheet.create({
   },
   headerTitle: { fontSize: FONT.display, fontWeight: FONT.black, color: "#fff", letterSpacing: -0.8 },
   headerSub: { fontSize: FONT.sm, color: "rgba(255,255,255,0.7)", marginTop: 3, fontWeight: FONT.medium },
+  addGroupBtn: {
+    width: 40, height: 40, borderRadius: 20,
+    backgroundColor: "rgba(255,255,255,0.22)",
+    alignItems: "center", justifyContent: "center",
+    marginTop: SPACE.xs,
+  },
   scroll: { flex: 1, borderTopLeftRadius: RADIUS.xxl + 4, borderTopRightRadius: RADIUS.xxl + 4, marginTop: -RADIUS.xxl },
   scrollContent: { paddingTop: SPACE.xl, paddingHorizontal: SPACE.xl },
   card: { borderRadius: RADIUS.xl, padding: SPACE.lg, marginBottom: SPACE.md, ...SHADOW.sm },

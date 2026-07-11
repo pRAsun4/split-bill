@@ -32,12 +32,12 @@ function BalanceCard({
   label: string; amount: number; icon: string; delay: number;
   fmt: (n: number) => string;
 }) {
-  const anim   = useRef(new Animated.Value(0)).current;
+  const anim = useRef(new Animated.Value(0)).current;
   const slideY = useRef(new Animated.Value(12)).current;
 
   useEffect(() => {
     Animated.parallel([
-      Animated.timing(anim,   { toValue: 1, duration: 500, delay, useNativeDriver: true }),
+      Animated.timing(anim, { toValue: 1, duration: 500, delay, useNativeDriver: true }),
       Animated.spring(slideY, { toValue: 0, delay, useNativeDriver: true, tension: 80, friction: 10 }),
     ]).start();
   }, []);
@@ -66,29 +66,49 @@ function GroupRow({
   fmt: (n: number) => string;
   t: ReturnType<typeof useAppContext>["t"];
 }) {
-  const bals    = groupBalances ?? [];
+  const bals = groupBalances ?? [];
   const totalOwed = bals.reduce((s, b) => s + b.owesYou, 0);
-  const totalOwes = bals.reduce((s, b) => s + b.youOwe,  0);
-  const net     = totalOwed - totalOwes;
-  const type    = Math.abs(net) < 0.01 ? "settled" : net > 0 ? "owed" : "owes";
-  const label   = type === "settled" ? t.common.settledUp : type === "owed" ? t.home.owesYou : t.common.youOwe;
+  const totalOwes = bals.reduce((s, b) => s + b.youOwe, 0);
+  const net = totalOwed - totalOwes;
+  const type = Math.abs(net) < 0.01 ? "settled" : net > 0 ? "owed" : "owes";
+  const label = type === "settled" ? t.common.settledUp : type === "owed" ? t.home.owesYou : t.common.youOwe;
+
+  const groupExpenses = useGroupStore.getState().expenses[group.id] ?? [];
+  const totalExpenses = groupExpenses.reduce((s, e) => s + parseFloat(String(e.totalAmount ?? 0)), 0);
 
   const shownMembers = group.members.filter((m) => m.userId !== myUserId).slice(0, 3);
+
+
+
 
   return (
     <FadeCard delay={delay}>
       <PressScale onPress={onPress}>
         <View style={[styles.groupRow, { backgroundColor: tc.card }]}>
-          <View style={[styles.groupRowEmoji, { backgroundColor: tc.cardAlt }]}>
-            <Text style={{ fontSize: 24 }}>{group.iconEmoji ?? "👥"}</Text>
+
+          <View style={{ display: "flex", flexDirection: "row", justifyContent: "space-between", width: "100%", paddingBottom: 10, borderBottomWidth: 1, borderBottomColor: tc.border }}>
+            <View style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: SPACE.md }}>
+              <View style={[styles.groupRowEmoji, { backgroundColor: tc.cardAlt }]}>
+                <Text style={{ fontSize: 24 }}>{group.iconEmoji ?? "👥"}</Text>
+              </View>
+              <View>
+                <Text style={[styles.groupRowName, { color: tc.textPrimary }]}>{group.name}</Text>
+                <Text style={[styles.groupRowDate, { color: tc.textMuted }]}>
+                  {new Date(group.createdAt).toLocaleDateString("en-US", {
+                    month: "short", day: "numeric", year: "numeric",
+                  })}
+                </Text>
+              </View>
+            </View>
+            <View style={{ display: "flex", justifyContent: "center", gap: 2 }}>
+              <Text style={{ color: tc.textPrimary, fontWeight: "bold" }}>{fmt(totalExpenses)}</Text>
+            </View>
+
           </View>
+
+
+
           <View style={styles.groupRowCenter}>
-            <Text style={[styles.groupRowName, { color: tc.textPrimary }]}>{group.name}</Text>
-            <Text style={[styles.groupRowDate, { color: tc.textMuted }]}>
-              {new Date(group.createdAt).toLocaleDateString("en-US", {
-                month: "short", day: "numeric", year: "numeric",
-              })}
-            </Text>
             <View style={styles.groupRowAvatars}>
               {shownMembers.map((m, i) => (
                 <Avatar
@@ -100,10 +120,12 @@ function GroupRow({
                 />
               ))}
             </View>
+            <View style={styles.groupRowRight}>
+              <BalancePill label={label} amount={Math.abs(net)} type={type} />
+            </View>
           </View>
-          <View style={styles.groupRowRight}>
-            <BalancePill label={label} amount={Math.abs(net)} type={type} />
-          </View>
+
+
         </View>
       </PressScale>
     </FadeCard>
@@ -120,7 +142,7 @@ function FriendRow({
   fmt: (n: number) => string;
   t: ReturnType<typeof useAppContext>["t"];
 }) {
-  const isOwed    = net > 0;
+  const isOwed = net > 0;
   const isSettled = Math.abs(net) < 0.01;
 
   return (
@@ -137,8 +159,8 @@ function FriendRow({
               {isSettled
                 ? t.common.settledUp
                 : isOwed
-                ? `${t.home.owesYou} ${fmt(net)}`
-                : `${t.common.youOwe} ${fmt(-net)}`}
+                  ? `${t.home.owesYou} ${fmt(net)}`
+                  : `${t.common.youOwe} ${fmt(-net)}`}
             </Text>
           </View>
           <Ionicons name="chevron-forward" size={18} color={tc.textMuted} />
@@ -195,6 +217,7 @@ export default function HomeScreen() {
   return (
     <View style={[styles.root, { backgroundColor: tc.bg }]}>
       <LinearGradient colors={GRAD} style={[styles.header, { paddingTop: insets.top + SPACE.sm }]}>
+        {/* header top bar with logo, notification btn and avatar btn */}
         <View style={styles.topBar}>
           <View style={styles.topBarLeft}>
             <View style={styles.logoMark}>
@@ -213,9 +236,9 @@ export default function HomeScreen() {
         </View>
 
         <View style={styles.balanceRow}>
-          <BalanceCard label={t.home.youOweLabel} amount={totalOwes} icon="arrow-up-circle"   delay={100} fmt={fmt} />
+          <BalanceCard label={t.home.youOweLabel} amount={totalOwes} icon="arrow-up-circle" delay={100} fmt={fmt} />
           <View style={{ width: SPACE.md }} />
-          <BalanceCard label={t.home.owesYou}    amount={totalOwed} icon="arrow-down-circle" delay={220} fmt={fmt} />
+          <BalanceCard label={t.home.owesYou} amount={totalOwed} icon="arrow-down-circle" delay={220} fmt={fmt} />
         </View>
       </LinearGradient>
 
@@ -291,19 +314,19 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(255,255,255,0.18)",
     alignItems: "center", justifyContent: "center",
   },
-  balanceRow: { flexDirection: "row" },
+  balanceRow: { flexDirection: "row", paddingBottom: 40 },
   balanceCard: { backgroundColor: "rgba(0,0,0,0.18)", borderRadius: RADIUS.xl, padding: SPACE.lg },
   balanceAmount: { fontSize: FONT.xxl, fontWeight: FONT.black, color: "#fff", letterSpacing: -0.8 },
   balanceLabel: { fontSize: FONT.sm, color: "rgba(255,255,255,0.75)", fontWeight: FONT.medium, marginTop: 2 },
   scroll: { flex: 1, borderTopLeftRadius: RADIUS.xxl + 4, borderTopRightRadius: RADIUS.xxl + 4, marginTop: -(RADIUS.xxl + 4) },
   scrollContent: { paddingTop: SPACE.xl + 4, paddingHorizontal: SPACE.xl },
   groupRow: {
-    flexDirection: "row", alignItems: "center",
-    borderRadius: RADIUS.xl, padding: SPACE.lg,
+    flexDirection: "column", alignItems: "flex-start",
+    borderRadius: RADIUS.xxl, padding: SPACE.lg,
     marginBottom: SPACE.md, gap: SPACE.md, ...SHADOW.sm,
   },
-  groupRowEmoji: { width: 50, height: 50, borderRadius: RADIUS.md, alignItems: "center", justifyContent: "center" },
-  groupRowCenter: { flex: 1, gap: 3 },
+  groupRowEmoji: { width: 50, height: 50, borderRadius: RADIUS.pill, alignItems: "center", justifyContent: "center" },
+  groupRowCenter: { flex: 1, gap: 3, width: "100%", display: "flex", flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   groupRowName: { fontSize: FONT.md, fontWeight: FONT.bold },
   groupRowDate: { fontSize: FONT.xs, marginTop: 1 },
   groupRowAvatars: { flexDirection: "row", marginTop: 5 },

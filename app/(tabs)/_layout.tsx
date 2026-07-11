@@ -4,13 +4,23 @@ import CustomTabBar from "../../components/CustomTabBar";
 
 export default function TabsLayout() {
   return (
+    // <Tabs
+    //   tabBar={(props) => <CustomTabBar {...props} />}
+    //   screenOptions={{ headerShown: false }}
+    // >
+    //   <Tabs.Screen name="index" />
+    //   <Tabs.Screen name="transactions" />
+    //   <Tabs.Screen name="create" />
+    //   <Tabs.Screen name="groups" />
+    //   <Tabs.Screen name="profile" />
+    // </Tabs>
     <Tabs
       tabBar={(props) => <CustomTabBar {...props} />}
       screenOptions={{ headerShown: false }}
     >
       <Tabs.Screen name="index" />
       <Tabs.Screen name="transactions" />
-      <Tabs.Screen name="create" />
+      <Tabs.Screen name="friends" />
       <Tabs.Screen name="groups" />
       <Tabs.Screen name="profile" />
     </Tabs>
